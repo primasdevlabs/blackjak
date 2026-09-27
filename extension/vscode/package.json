@@ -1,0 +1,62 @@
+{
+  "name": "agent-vscode-extension",
+  "displayName": "AI Coding Agent",
+  "description": "IDE Integration for Go AI Coding Agent",
+  "version": "1.0.0",
+  "publisher": "ai-agent",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:agent.open"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "agent.open",
+        "title": "Agent: Open UI"
+      },
+      {
+        "command": "agent.newTask",
+        "title": "Agent: New Task"
+      },
+      {
+        "command": "agent.cancelTask",
+        "title": "Agent: Cancel Task"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agent-container",
+          "title": "AI Agent",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "agent-container": [
+        {
+          "id": "agent.view",
+          "name": "AI Coding Agent"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "tsc -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,0 +1,27 @@
+# Go binaries and build artifacts
+bin/
+*.exe
+*.exe.test
+*.out
+*.test
+*.prof
+
+# Node dependencies and build outputs
+node_modules/
+ui/node_modules/
+ui/dist/
+extension/vscode/node_modules/
+extension/vscode/out/
+
+# Environment and local settings
+.env
+.env.local
+*.log
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
