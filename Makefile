@@ -7,6 +7,7 @@ build: build-backend build-ui build-extension
 build-backend:
 	@echo "Building Go Agent binary..."
 	go build -o bin/agent.exe ./cmd/agent
+	copy bin\agent.exe extension\bin\agent-win32-x64.exe >nul
 
 build-ui:
 	@echo "Building React Webview UI..."
@@ -43,3 +44,7 @@ dev:
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf bin/ extension/webview/react/dist extension/out
+
+vsix: build
+	@echo "Packaging VSIX..."
+	cd extension && npx @vscode/vsce package --allow-missing-repository

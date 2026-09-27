@@ -1,0 +1,23 @@
+# Dev sources & tooling
+src/**
+.vscode/**
+tsconfig.json
+**/*.ts
+**/*.map
+
+# Webview: ship only the built bundle, not sources or node_modules
+webview/react/node_modules/**
+webview/react/src/**
+webview/react/index.html
+webview/react/package*.json
+webview/react/tsconfig.json
+webview/react/vite.config.ts
+
+# Node modules not needed at runtime are already minimal; exclude dev metadata
+node_modules/**/CHANGELOG.md
+node_modules/**/README*
+node_modules/**/test/**
+
+# Misc
+.gitignore
+*.vsix
