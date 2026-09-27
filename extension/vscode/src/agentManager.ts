@@ -4,11 +4,16 @@ import { HealthCheckProbe } from './healthCheck';
 import { AgentConnection, ConnectionState } from './agentConnection';
 import { IDEBridge } from './ideBridge';
 
+import { FileChangeTracker } from './fileChangeTracker';
+import { TabManager } from './tabManager';
+
 export class AgentManager {
   private context: vscode.ExtensionContext;
   private processManager: AgentProcessManager;
   private connection: AgentConnection;
   private ideBridge: IDEBridge;
+  private fileChangeTracker: FileChangeTracker;
+  private tabManager: TabManager;
   private outputChannel: vscode.OutputChannel;
   private statusBarItem: vscode.StatusBarItem;
   private readyPromise: Promise<void> | null = null;
@@ -20,6 +25,8 @@ export class AgentManager {
     this.processManager = new AgentProcessManager(this.outputChannel);
     this.connection = new AgentConnection(this.outputChannel);
     this.ideBridge = new IDEBridge(context, this.outputChannel);
+    this.fileChangeTracker = new FileChangeTracker();
+    this.tabManager = new TabManager(this.fileChangeTracker);
 
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.statusBarItem.command = 'agent.openSidebar';
@@ -27,6 +34,22 @@ export class AgentManager {
 
     this.connection.onStateChange((state) => {
       this.updateStatusBar(state);
+    });
+
+    this.connection.onEvent((evt: any) => {
+      if (evt && (evt.type === 'file.changed' || evt.type === 'file.created') && evt.data) {
+        this.tabManager.handleFileChangeEvent({
+          taskId: evt.data.taskId || evt.runId || 'default_task',
+          agentId: evt.data.agentId || '',
+          path: evt.data.path || '',
+          previousPath: evt.data.previousPath,
+          changeType: evt.data.changeType || 'modified',
+          state: evt.data.state,
+          role: evt.data.role,
+          importance: evt.data.importance,
+          isPreExisting: evt.data.isPreExisting,
+        });
+      }
     });
 
     this.resetReadyPromise();
