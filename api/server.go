@@ -8,9 +8,12 @@ import (
 	"sync"
 	"time"
 
+	"path/filepath"
+
 	"blackjak/agent"
 	"blackjak/llm"
-	"blackjak/tools"
+	"blackjak/memory"
+	"blackjak/protocol"
 	"blackjak/workspace"
 )
 
@@ -35,6 +38,9 @@ type Server struct {
 	httpServer      *http.Server
 	listener        net.Listener
 	mu              sync.Mutex
+
+	hostInfo    *protocol.HostInfo
+	hostInfoMtx sync.RWMutex
 }
 
 // NewServer initializes an API Server.
@@ -47,17 +53,41 @@ func NewServer(cfg ServerConfig, llmClient llm.Client) *Server {
 	broker := agent.NewEventBroker()
 	rm := agent.NewRunManager(broker)
 	sm := NewSettingsManager()
+	sm.SetStoragePath(filepath.Join(cfg.Workspace, ".blackjak", "settings.json"))
 	qm := agent.NewQueueManager(broker)
 	cr := NewCommandRegistry()
 
-	toolRegistry := tools.NewRegistry()
-	toolRegistry.Register(tools.NewFilesystemTool())
-	toolRegistry.Register(tools.NewShellTool())
-	toolRegistry.Register(tools.NewGitTool())
-	toolRegistry.Register(tools.NewSearchTool())
-	toolRegistry.Register(tools.NewTestTool())
-
-	ag := agent.New(broker, toolRegistry, ws, llmClient)
+	ag := agent.New(broker, ws, llmClient)
+	ag.SetPersistentMemory(memory.NewPersistentMemory(
+		filepath.Join(cfg.Workspace, ".blackjak", "memory.json")))
+	ag.SetClientResolver(func(role string) llm.Client {
+		cfg := sm.GetConfig()
+		var mc llm.ModelConfig
+		switch role {
+		case "thinking", "explorer", "reviewer":
+			mc = cfg.Thinking
+		case "fast", "tester":
+			mc = cfg.Fast
+		case "review":
+			mc = cfg.Review
+		default:
+			mc = cfg.Coding
+		}
+		if !cfg.UseSeparateModels || mc.ModelID == "" {
+			mc = llm.ModelConfig{
+				ProviderID: cfg.ActiveProvider,
+				ModelID:    cfg.CodingModelID,
+			}
+		}
+		prov := sm.createProviderInstance(mc.ProviderID)
+		if prov == nil {
+			prov = sm.activeProvider
+		}
+		if prov == nil {
+			return nil
+		}
+		return llm.NewProviderClient(prov, mc.ModelID)
+	})
 
 	return &Server{
 		host:            cfg.Host,
@@ -82,6 +112,22 @@ func (s *Server) Port() int {
 	return s.port
 }
 
+// SetHostInfo records the host adapter identity and capabilities negotiated
+// via the host.hello protocol message.
+func (s *Server) SetHostInfo(info protocol.HostInfo) {
+	s.hostInfoMtx.Lock()
+	defer s.hostInfoMtx.Unlock()
+	s.hostInfo = &info
+}
+
+// HostInfo returns the negotiated host adapter info, or nil when the agent
+// is running without an IDE host (e.g. CLI mode).
+func (s *Server) HostInfo() *protocol.HostInfo {
+	s.hostInfoMtx.RLock()
+	defer s.hostInfoMtx.RUnlock()
+	return s.hostInfo
+}
+
 // Start launches the HTTP and WebSocket server listening on the configured host:port.
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
@@ -90,7 +136,13 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/initial-state", s.handleInitialState)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/api/events", s.handleEventsSSE)
-	mux.HandleFunc("/api/runs", s.handleCreateRun)
+	mux.HandleFunc("/api/runs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			s.handleListRuns(w, r)
+			return
+		}
+		s.handleCreateRun(w, r)
+	})
 	mux.HandleFunc("/api/runs/", s.handleRunSubroutes)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/providers", s.handleProviders)
@@ -134,7 +186,7 @@ func (s *Server) Stop(ctx context.Context) error {
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 
 		if r.Method == http.MethodOptions {

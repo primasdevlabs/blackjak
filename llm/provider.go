@@ -26,6 +26,8 @@ type StreamEvent struct {
 type Provider interface {
 	Name() string
 	ListModels(ctx context.Context) ([]Model, error)
+	// Ping performs a real authenticated request to verify connectivity and credentials.
+	Ping(ctx context.Context) error
 	Chat(ctx context.Context, request CompletionRequest) (*CompletionResponse, error)
 	Stream(ctx context.Context, request CompletionRequest) (<-chan StreamEvent, error)
 	Capabilities() ProviderCapabilities

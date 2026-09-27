@@ -41,18 +41,23 @@ You immediately see:
 ## ⚙️ Architecture
 
 ```
-VS Code Workspace Host
+VS Code-family Host (VS Code · Cursor · Windsurf · VSCodium · Theia)
 │
-├── VS Code Extension Host (extension/vscode/)
+├── Extension Host Adapter (extension/)
+│   ├── Host Layer (src/host/) — IDEHost interface, VSCodeHost adapter,
+│   │   capability detection & host identification (compatibility.ts)
 │   ├── Process Manager (Auto-spawns Go agent backend)
 │   ├── File Change Tracker & Dirty Document Protection
 │   ├── Tab Manager (Intelligent tab policy & editor placement)
-│   └── Webview Sidebar Panel (Hosts React UI build)
+│   ├── Webview Sidebar Panel (Hosts the React build)
+│   └── Webview Bridge (host-neutral commands → IDEHost calls)
 │       │
-│       │ WebSocket / HTTP API (127.0.0.1:<allocated-port>)
+│       │ Agent Protocol (protocol/) over
+│       │ WebSocket / HTTP (127.0.0.1:<allocated-port>)
 │       ▼
 ├── Go Agent Server (api/)
 │   ├── REST & RFC 6455 WebSocket Protocol Handlers
+│   ├── Capability negotiation (host.hello → HostInfo/HostCapabilities)
 │   ├── Command Registry (/api/commands & /api/commands/execute)
 │   ├── Settings & Provider Manager (OpenAI, Gemini, Anthropic, Custom)
 │   ├── Event Broker (agent/events.go)
@@ -62,7 +67,16 @@ VS Code Workspace Host
 │       ├── Context Compactor & Budget Engine (context/compaction.go)
 │       ├── Workspace Watcher & Normalized Event Engine (workspace/watcher.go)
 │       └── File Lease Lock Manager (workspace/tracker.go)
+│
+└── React Webview UI (extension/webview/react/)
+    └── Host-neutral: speaks AgentHost — never IDE APIs directly
 ```
+
+The agent runtime is IDE-agnostic: it knows workspaces, files, editors,
+terminals and git — never Cursor internals or VS Code internals. The
+extension's `IDEHost` layer translates those concepts into the concrete
+host's public extension API, and capability negotiation (`host.hello`) lets
+the agent degrade gracefully on hosts with partial API coverage.
 
 ---
 

@@ -38,8 +38,12 @@ BlackJak Repository
 ├── tools/              → Agent tool execution (Filesystem, Shell, Git, Search, Test)
 ├── llm/                → Provider abstraction (OpenAI, Gemini, Anthropic, Custom)
 │
-├── ui/                 → React 19 + Vite 6 + Tailwind CSS v4 Sidebar UI
-└── extension/vscode/   → VS Code Extension Host & Tab Management
+├── protocol/           → Stable wire contract (messages, events, host info)
+│
+└── extension/          → VS Code-family extension host adapter (Code, Cursor,
+    │                       Windsurf, VSCodium, Theia via the public API)
+    ├── src/host/       → IDEHost interface, VSCodeHost, capability detection
+    └── webview/react/  → React 19 + Vite 6 + Tailwind CSS v4 Sidebar UI
 ```
 
 ---
@@ -52,11 +56,11 @@ BlackJak Repository
    cd blackjak
    ```
 
-2. **Install Frontend & Extension Dependencies**:
+2. **Install Extension & Webview Dependencies**:
    ```bash
-   cd ui && npm install
-   cd ../extension/vscode && npm install
-   cd ../..
+   cd extension && npm install
+   cd webview/react && npm install
+   cd ../../..
    ```
 
 3. **Build All Artifacts**:
@@ -76,7 +80,7 @@ BlackJak Repository
    Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 6. **Launch VS Code Extension in Extension Host**:
-   - Open `extension/vscode/` in VS Code.
+   - Open `extension/` in VS Code.
    - Press `F5` to open a new Extension Development Host window with BlackJak preloaded.
 
 ---

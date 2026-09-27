@@ -157,12 +157,173 @@ func (o *Orchestrator) Handoff(fromSub, toSub *Subagent, data any) {
 		Timestamp:   time.Now(),
 	}
 
+	// Deliver to target subagent's inbox
+	toSub.SendMessage(msg)
+
 	o.emitEvent(EventAgentHandoff, fromSub, map[string]interface{}{
 		"from": fromSub.ID,
 		"to":   toSub.ID,
 		"data": data,
 		"msg":  msg,
 	})
+}
+
+// WaitOne blocks until the specified subagent reaches a terminal state or context is cancelled.
+func (o *Orchestrator) WaitOne(ctx context.Context, subagentID string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		o.mu.RLock()
+		sub, ok := o.subagents[subagentID]
+		o.mu.RUnlock()
+
+		if !ok {
+			return fmt.Errorf("subagent %s not found", subagentID)
+		}
+
+		status := sub.GetStatus()
+		if status == SubagentCompleted || status == SubagentFailed || status == SubagentCancelled {
+			return nil
+		}
+
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// WaitAll blocks until all subagents reach terminal states or context is cancelled.
+func (o *Orchestrator) WaitAll(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		allDone := true
+		o.mu.RLock()
+		for _, sub := range o.subagents {
+			status := sub.GetStatus()
+			if status != SubagentCompleted && status != SubagentFailed && status != SubagentCancelled {
+				allDone = false
+				break
+			}
+		}
+		o.mu.RUnlock()
+
+		if allDone {
+			return nil
+		}
+
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// WaitAny blocks until any one of the specified subagents completes, fails, or is cancelled.
+// Returns the ID of the first subagent that reached a terminal state.
+func (o *Orchestrator) WaitAny(ctx context.Context, ids ...string) (string, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+
+		o.mu.RLock()
+		for _, id := range ids {
+			if sub, ok := o.subagents[id]; ok {
+				status := sub.GetStatus()
+				if status == SubagentCompleted || status == SubagentFailed || status == SubagentCancelled {
+					o.mu.RUnlock()
+					return id, nil
+				}
+			}
+		}
+		o.mu.RUnlock()
+
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// PauseSubagent suspends a running subagent. The subagent must call WaitIfPaused()
+// at checkpoints for this to take effect.
+func (o *Orchestrator) PauseSubagent(id string) error {
+	o.mu.RLock()
+	sub, ok := o.subagents[id]
+	o.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("subagent %s not found", id)
+	}
+	sub.Pause()
+	o.emitEvent(EventAgentWaiting, sub, map[string]interface{}{
+		"id":     id,
+		"reason": "Paused by orchestrator",
+	})
+	return nil
+}
+
+// ResumeSubagent resumes a paused subagent.
+func (o *Orchestrator) ResumeSubagent(id string) error {
+	o.mu.RLock()
+	sub, ok := o.subagents[id]
+	o.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("subagent %s not found", id)
+	}
+	sub.Resume()
+	o.emitEvent(EventAgentStarted, sub, map[string]interface{}{
+		"id":     id,
+		"reason": "Resumed by orchestrator",
+	})
+	return nil
+}
+
+// SendMessage delivers a structured message from one subagent to another.
+func (o *Orchestrator) SendMessage(fromID, toID string, msgType MessageType, data any) error {
+	o.mu.RLock()
+	toSub, ok := o.subagents[toID]
+	o.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("target subagent %s not found", toID)
+	}
+
+	msg := AgentMessage{
+		FromAgentID: fromID,
+		ToAgentID:   toID,
+		Type:        msgType,
+		Data:        data,
+		Timestamp:   time.Now(),
+	}
+
+	toSub.SendMessage(msg)
+	return nil
+}
+
+// CancelAllSubagents cancels every running subagent under this orchestrator.
+func (o *Orchestrator) CancelAllSubagents() {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	for _, sub := range o.subagents {
+		status := sub.GetStatus()
+		if status == SubagentRunning || status == SubagentQueued || status == SubagentCreated || status == SubagentPaused {
+			sub.SetStatus(SubagentCancelled)
+			// Wake paused subagents so they can exit
+			if sub.IsPaused() {
+				sub.Resume()
+			}
+		}
+	}
+}
+
+// CleanupLeases releases all file leases held by a specific subagent.
+// Called when a subagent fails or is cancelled to prevent lease deadlocks.
+func (o *Orchestrator) CleanupLeases(agentID string) {
+	if o.tracker != nil {
+		o.tracker.CleanupAgentLeases(agentID)
+	}
 }
 
 func (o *Orchestrator) emitEvent(evtType EventType, sub *Subagent, data interface{}) {
@@ -178,3 +339,4 @@ func (o *Orchestrator) emitEvent(evtType EventType, sub *Subagent, data interfac
 		o.broker.Publish(evt)
 	}
 }
+

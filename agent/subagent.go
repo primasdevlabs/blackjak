@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// SubagentPaused indicates the subagent has been temporarily suspended by the orchestrator.
+const SubagentPaused SubagentStatus = "paused"
+
 // SubagentStatus defines the lifecycle states of a subagent.
 type SubagentStatus string
 
@@ -50,33 +53,42 @@ type AgentMessage struct {
 
 // Subagent represents a first-class specialized worker subagent.
 type Subagent struct {
-	ID             string         `json:"id"`
-	ParentRunID    string         `json:"parentRunId"`
-	Role           string         `json:"role"`
-	Task           string         `json:"task"`
-	Status         SubagentStatus `json:"status"`
-	WorkspaceScope []string       `json:"workspaceScope,omitempty"`
-	StartedAt      time.Time      `json:"startedAt"`
-	FinishedAt     *time.Time     `json:"finishedAt,omitempty"`
-	Result         string         `json:"result,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	Findings       []Finding      `json:"findings,omitempty"`
-	Activity       string         `json:"activity,omitempty"`
-	mu             sync.RWMutex   `json:"-"`
+	ID              string         `json:"id"`
+	ParentRunID     string         `json:"parentRunId"`
+	Role            string         `json:"role"`
+	Task            string         `json:"task"`
+	Status          SubagentStatus `json:"status"`
+	WorkspaceScope  []string       `json:"workspaceScope,omitempty"`
+	ToolPermissions []string       `json:"toolPermissions,omitempty"`
+	StartedAt       time.Time      `json:"startedAt"`
+	FinishedAt      *time.Time     `json:"finishedAt,omitempty"`
+	Result          string         `json:"result,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Findings        []Finding      `json:"findings,omitempty"`
+	Activity        string         `json:"activity,omitempty"`
+	Inbox           chan AgentMessage `json:"-"`
+	mu              sync.RWMutex   `json:"-"`
+	pauseMu         sync.Mutex     `json:"-"`
+	pauseCond       *sync.Cond     `json:"-"`
+	paused          bool           `json:"-"`
 }
 
 // NewSubagent initializes a new Subagent instance.
 func NewSubagent(id, parentRunID, role, task string, scope []string) *Subagent {
-	return &Subagent{
-		ID:             id,
-		ParentRunID:    parentRunID,
-		Role:           role,
-		Task:           task,
-		Status:         SubagentCreated,
-		WorkspaceScope: scope,
-		StartedAt:      time.Now(),
-		Findings:       make([]Finding, 0),
+	s := &Subagent{
+		ID:              id,
+		ParentRunID:     parentRunID,
+		Role:            role,
+		Task:            task,
+		Status:          SubagentCreated,
+		WorkspaceScope:  scope,
+		ToolPermissions: DefaultToolPermissions(role),
+		StartedAt:       time.Now(),
+		Findings:        make([]Finding, 0),
+		Inbox:           make(chan AgentMessage, 64),
 	}
+	s.pauseCond = sync.NewCond(&s.pauseMu)
+	return s
 }
 
 // GetStatus returns the thread-safe status of the subagent.
@@ -124,4 +136,48 @@ func (s *Subagent) SetError(errStr string) {
 	defer s.mu.Unlock()
 	s.Error = errStr
 	s.Status = SubagentFailed
+}
+
+// Pause suspends the subagent. Execution functions should call WaitIfPaused()
+// at safe checkpoints to honour pause requests.
+func (s *Subagent) Pause() {
+	s.pauseMu.Lock()
+	s.paused = true
+	s.pauseMu.Unlock()
+	s.SetStatus(SubagentPaused)
+}
+
+// Resume unpauses a paused subagent and wakes its execution goroutine.
+func (s *Subagent) Resume() {
+	s.pauseMu.Lock()
+	s.paused = false
+	s.pauseCond.Broadcast()
+	s.pauseMu.Unlock()
+	s.SetStatus(SubagentRunning)
+}
+
+// WaitIfPaused blocks the calling goroutine while the subagent is paused.
+// Call this at safe checkpoints inside subagent execution functions.
+func (s *Subagent) WaitIfPaused() {
+	s.pauseMu.Lock()
+	for s.paused {
+		s.pauseCond.Wait()
+	}
+	s.pauseMu.Unlock()
+}
+
+// IsPaused returns whether the subagent is currently paused.
+func (s *Subagent) IsPaused() bool {
+	s.pauseMu.Lock()
+	defer s.pauseMu.Unlock()
+	return s.paused
+}
+
+// SendMessage delivers a message to the subagent's inbox (non-blocking).
+func (s *Subagent) SendMessage(msg AgentMessage) {
+	select {
+	case s.Inbox <- msg:
+	default:
+		// Inbox full — drop message to avoid blocking the sender
+	}
 }

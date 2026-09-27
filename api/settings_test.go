@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -32,15 +35,88 @@ func TestSettingsManager_MaskedCredentials(t *testing.T) {
 	}
 }
 
-func TestSettingsManager_TestProvider(t *testing.T) {
+func TestSettingsManager_TestProvider_NoKey(t *testing.T) {
 	sm := NewSettingsManager()
+
+	// No key configured — must fail, not return the static catalog.
+	success, msg, _ := sm.TestProvider("OpenAI")
+	if success {
+		t.Fatal("TestProvider reported success without an API key")
+	}
+	if !strings.Contains(msg, "API key") {
+		t.Errorf("Expected missing-key message, got %q", msg)
+	}
+}
+
+func TestSettingsManager_TestProvider_LiveSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sk-test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"id": "gpt-4o"}},
+		})
+	}))
+	defer server.Close()
+
+	sm := NewSettingsManager()
+	cfg := sm.config
+	cfg.Providers["OpenAI"] = ProviderCredentials{
+		ApiKey:      "sk-test",
+		BaseURL:     server.URL,
+		StorageMode: StorageStored,
+	}
+	sm.UpdateConfig(cfg)
 
 	success, msg, models := sm.TestProvider("OpenAI")
 	if !success {
-		t.Fatalf("TestProvider failed: %s", msg)
+		t.Fatalf("TestProvider failed against live endpoint: %s", msg)
 	}
-
 	if len(models) == 0 {
-		t.Errorf("Expected mock OpenAI models, got 0")
+		t.Error("Expected models from live endpoint")
+	}
+}
+
+func TestSettingsManager_TestProvider_BadKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	sm := NewSettingsManager()
+	cfg := sm.config
+	cfg.Providers["OpenAI"] = ProviderCredentials{
+		ApiKey:      "sk-wrong",
+		BaseURL:     server.URL,
+		StorageMode: StorageStored,
+	}
+	sm.UpdateConfig(cfg)
+
+	success, msg, _ := sm.TestProvider("OpenAI")
+	if success {
+		t.Fatal("TestProvider succeeded with a rejected key")
+	}
+	if !strings.Contains(msg, "authentication failed") {
+		t.Errorf("Expected auth-failure message, got %q", msg)
+	}
+}
+
+func TestSettingsManager_TestProvider_Unreachable(t *testing.T) {
+	sm := NewSettingsManager()
+	cfg := sm.config
+	cfg.Providers["OpenAI"] = ProviderCredentials{
+		ApiKey:      "sk-test",
+		BaseURL:     "http://127.0.0.1:1", // nothing listens here
+		StorageMode: StorageStored,
+	}
+	sm.UpdateConfig(cfg)
+
+	success, msg, _ := sm.TestProvider("OpenAI")
+	if success {
+		t.Fatal("TestProvider succeeded against unreachable endpoint")
+	}
+	if !strings.Contains(msg, "connection failed") {
+		t.Errorf("Expected connection-failure message, got %q", msg)
 	}
 }

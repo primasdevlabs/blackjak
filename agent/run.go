@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"blackjak/llm"
 	"blackjak/workspace"
 )
 
@@ -55,9 +56,50 @@ type Run struct {
 	PendingReq   *ApprovalRequest               `json:"pendingApproval,omitempty"`
 	Orchestration*Orchestrator                  `json:"-"`
 	approvalCh   chan ApprovalResponse          `json:"-"`
+	compactCh    chan struct{}                  `json:"-"`
+	messages     []llm.Message                  `json:"-"`
 	ctx          context.Context                `json:"-"`
 	cancel       context.CancelFunc             `json:"-"`
 	mu           sync.RWMutex                   `json:"-"`
+}
+
+// SetMessages stores the loop's current conversation so command handlers can
+// inspect or compact it.
+func (r *Run) SetMessages(msgs []llm.Message) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.messages = msgs
+}
+
+// GetMessages returns a copy of the loop's current conversation.
+func (r *Run) GetMessages() []llm.Message {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]llm.Message, len(r.messages))
+	copy(out, r.messages)
+	return out
+}
+
+// RequestCompaction asks the running loop to compact its context at the next
+// iteration. Returns false if there is no active loop or a request is pending.
+func (r *Run) RequestCompaction() bool {
+	select {
+	case r.compactCh <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// TakeCompactionRequest reports and clears a pending compaction request.
+// Called by the agent loop between iterations.
+func (r *Run) TakeCompactionRequest() bool {
+	select {
+	case <-r.compactCh:
+		return true
+	default:
+		return false
+	}
 }
 
 // Context returns the execution context associated with this run.
@@ -151,6 +193,7 @@ func (m *RunManager) CreateRun(prompt string, workspacePath string, attachments 
 		References:    refs,
 		Orchestration: orch,
 		approvalCh:    make(chan ApprovalResponse, 1),
+		compactCh:     make(chan struct{}, 1),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -194,6 +237,73 @@ func (m *RunManager) ListRuns() []*Run {
 		list = append(list, r)
 	}
 	return list
+}
+
+// LatestRun returns the most recently created run, preferring a live one.
+func (m *RunManager) LatestRun() *Run {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var live, newest *Run
+	for _, r := range m.runs {
+		r.mu.RLock()
+		status, created := r.Status, r.CreatedAt
+		r.mu.RUnlock()
+		if status == RunRunning || status == RunWaiting || status == RunPending {
+			if live == nil || created.After(live.CreatedAt) {
+				live = r
+			}
+			continue
+		}
+		if newest == nil || created.After(newest.CreatedAt) {
+			newest = r
+		}
+	}
+	if live != nil {
+		return live
+	}
+	return newest
+}
+
+// DeleteRun removes a run from history. A live run is cancelled first.
+func (m *RunManager) DeleteRun(id string) bool {
+	m.mu.Lock()
+	run, ok := m.runs[id]
+	if !ok {
+		m.mu.Unlock()
+		return false
+	}
+	delete(m.runs, id)
+	m.mu.Unlock()
+
+	run.mu.Lock()
+	live := run.Status == RunRunning || run.Status == RunWaiting || run.Status == RunPending
+	if live {
+		run.Status = RunCancelled
+		run.UpdatedAt = time.Now()
+		if run.cancel != nil {
+			run.cancel()
+		}
+	}
+	run.mu.Unlock()
+	return true
+}
+
+// ClearFinished removes completed/failed/cancelled runs from history.
+// Returns the number of runs removed.
+func (m *RunManager) ClearFinished() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	removed := 0
+	for id, r := range m.runs {
+		r.mu.RLock()
+		status := r.Status
+		r.mu.RUnlock()
+		if status == RunCompleted || status == RunFailed || status == RunCancelled {
+			delete(m.runs, id)
+			removed++
+		}
+	}
+	return removed
 }
 
 // CancelRun signals context cancellation for a running task.

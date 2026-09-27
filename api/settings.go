@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -81,6 +83,7 @@ type SettingsManager struct {
 	activeProvider llm.Provider
 	router         *llm.ModelRouter
 	providers      map[string]llm.Provider
+	filePath       string
 }
 
 // NewSettingsManager initializes SettingsManager.
@@ -107,19 +110,19 @@ func NewSettingsManager() *SettingsManager {
 			ModelID:    "claude-sonnet-5",
 			Role:       llm.ModelRoleReview,
 		},
-		ThinkingModelID:   "claude-opus-5",
-		CodingModelID:     "gpt-5.3-codex",
-		FastModelID:       "gemini-3.5-flash-lite",
-		ReviewModelID:     "claude-sonnet-5",
-		UseSeparateModels: true,
-		Effort:            EffortMedium,
-		Mode:              ModeCode,
-		ParallelSubagents: true,
-		MaxSubagents:      4,
+		ThinkingModelID:     "claude-opus-5",
+		CodingModelID:       "gpt-5.3-codex",
+		FastModelID:         "gemini-3.5-flash-lite",
+		ReviewModelID:       "claude-sonnet-5",
+		UseSeparateModels:   true,
+		Effort:              EffortMedium,
+		Mode:                ModeCode,
+		ParallelSubagents:   true,
+		MaxSubagents:        4,
 		PromptQueueBehavior: "sequential",
-		AutoOpenFile:      true,
-		AutoOpenDiff:      true,
-		AskDestructiveOps: true,
+		AutoOpenFile:        true,
+		AutoOpenDiff:        true,
+		AskDestructiveOps:   true,
 		Providers: map[string]ProviderCredentials{
 			"OpenAI":            {BaseURL: "https://api.openai.com/v1", StorageMode: StorageEnvironment},
 			"Google Gemini":     {StorageMode: StorageEnvironment},
@@ -178,6 +181,56 @@ func (sm *SettingsManager) initActiveProvider() {
 	}
 }
 
+// SetStoragePath points the manager at a JSON file used for persistence.
+// If the file exists, it is loaded over the defaults so missing fields keep
+// their default values.
+func (sm *SettingsManager) SetStoragePath(path string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.filePath = path
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	loaded := sm.config
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return
+	}
+	sm.config = loaded
+	sm.initActiveProvider()
+}
+
+// saveLocked persists the current config. Callers must hold sm.mu.
+// Credentials marked as session-only are stripped before writing.
+func (sm *SettingsManager) saveLocked() {
+	if sm.filePath == "" {
+		return
+	}
+	cfg := sm.config
+	providers := make(map[string]ProviderCredentials, len(cfg.Providers))
+	for name, cred := range cfg.Providers {
+		if cred.StorageMode == StorageSession {
+			cred.ApiKey = ""
+		}
+		providers[name] = cred
+	}
+	cfg.Providers = providers
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(sm.filePath), 0o755); err != nil {
+		return
+	}
+	tmp := sm.filePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, sm.filePath)
+}
+
 // GetMaskedConfig returns a thread-safe copy of configuration with API keys masked.
 func (sm *SettingsManager) GetMaskedConfig() SettingsConfig {
 	sm.mu.RLock()
@@ -202,6 +255,93 @@ func (sm *SettingsManager) GetConfig() SettingsConfig {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.config
+}
+
+// ApplyPatch merges only the fields present in the given JSON patch into the
+// config, so partial updates cannot clobber unrelated settings with zero values.
+func (sm *SettingsManager) ApplyPatch(patch map[string]json.RawMessage) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	str := func(key string, dst *string) {
+		if raw, ok := patch[key]; ok {
+			var v string
+			if json.Unmarshal(raw, &v) == nil && v != "" {
+				*dst = v
+			}
+		}
+	}
+	boolean := func(key string, dst *bool) {
+		if raw, ok := patch[key]; ok {
+			var v bool
+			if json.Unmarshal(raw, &v) == nil {
+				*dst = v
+			}
+		}
+	}
+	num := func(key string, dst *int) {
+		if raw, ok := patch[key]; ok {
+			var v int
+			if json.Unmarshal(raw, &v) == nil && v > 0 {
+				*dst = v
+			}
+		}
+	}
+	model := func(key string, idKey string, dst *llm.ModelConfig, dstID *string) {
+		if raw, ok := patch[key]; ok {
+			var v llm.ModelConfig
+			if json.Unmarshal(raw, &v) == nil && v.ModelID != "" {
+				*dst = v
+				*dstID = v.ModelID
+			}
+		}
+		if raw, ok := patch[idKey]; ok {
+			var v string
+			if json.Unmarshal(raw, &v) == nil && v != "" {
+				*dstID = v
+				dst.ModelID = v
+			}
+		}
+	}
+
+	str("activeProvider", &sm.config.ActiveProvider)
+
+	if raw, ok := patch["providers"]; ok {
+		var v map[string]ProviderCredentials
+		if json.Unmarshal(raw, &v) == nil {
+			for name, newCred := range v {
+				if old, exists := sm.config.Providers[name]; exists && strings.Contains(newCred.ApiKey, "••••") {
+					newCred.ApiKey = old.ApiKey
+				}
+				sm.config.Providers[name] = newCred
+			}
+		}
+	}
+
+	model("thinking", "thinkingModelId", &sm.config.Thinking, &sm.config.ThinkingModelID)
+	model("coding", "codingModelId", &sm.config.Coding, &sm.config.CodingModelID)
+	model("fast", "fastModelId", &sm.config.Fast, &sm.config.FastModelID)
+	model("review", "reviewModelId", &sm.config.Review, &sm.config.ReviewModelID)
+
+	boolean("useSeparateModels", &sm.config.UseSeparateModels)
+	str("effort", (*string)(&sm.config.Effort))
+	str("mode", (*string)(&sm.config.Mode))
+	boolean("parallelSubagents", &sm.config.ParallelSubagents)
+	num("maxSubagents", &sm.config.MaxSubagents)
+	str("promptQueueBehavior", &sm.config.PromptQueueBehavior)
+	boolean("autoOpenFile", &sm.config.AutoOpenFile)
+	boolean("autoOpenDiff", &sm.config.AutoOpenDiff)
+	boolean("askDestructiveOps", &sm.config.AskDestructiveOps)
+
+	if raw, ok := patch["modelRoutes"]; ok {
+		var v map[string]string
+		if json.Unmarshal(raw, &v) == nil && v != nil {
+			sm.config.ModelRoutes = v
+		}
+	}
+
+	sm.saveLocked()
+	sm.initActiveProvider()
 }
 
 // UpdateConfig updates settings and re-initializes the active provider.
@@ -266,23 +406,26 @@ func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 		sm.config.ModelRoutes = updates.ModelRoutes
 	}
 
+	sm.saveLocked()
 	sm.initActiveProvider()
 	sm.mu.Unlock()
 }
 
-// TestProvider Connection helper
+// TestProvider performs a real connectivity + credential check via Ping.
 func (sm *SettingsManager) TestProvider(providerID string) (bool, string, []llm.Model) {
 	prov := sm.createProviderInstance(providerID)
 	if prov == nil {
 		return false, fmt.Sprintf("Provider %s not configured", providerID), nil
 	}
 
-	models, err := prov.ListModels(context.Background())
-	if err != nil {
+	if err := prov.Ping(context.Background()); err != nil {
 		return false, err.Error(), nil
 	}
 
-	return true, fmt.Sprintf("Successfully connected to %s (%d models available)", providerID, len(models)), models
+	// Ping passed — fetch the model list (falls back to the static catalog if
+	// the provider can't enumerate).
+	models, _ := prov.ListModels(context.Background())
+	return true, fmt.Sprintf("Connected to %s (%d models available)", providerID, len(models)), models
 }
 
 // RefreshModels fetches the latest available models for a given provider or all providers.

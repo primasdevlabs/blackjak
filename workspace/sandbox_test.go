@@ -35,3 +35,33 @@ func TestSandbox_ValidateOperation(t *testing.T) {
 		t.Errorf("Expected sandbox validation error for outside path")
 	}
 }
+
+func TestScopedSandbox_ScopeValidation(t *testing.T) {
+	wsRoot, _ := filepath.Abs("./testdata")
+	ws := New(wsRoot)
+
+	scopes := []string{
+		filepath.Join(wsRoot, "src"),
+		filepath.Join(wsRoot, "pkg"),
+	}
+
+	scopedSb := NewScopedSandbox(ws, scopes)
+
+	// Path inside designated scope -> allowed
+	allowedPath := filepath.Join(wsRoot, "src", "components", "App.tsx")
+	if err := scopedSb.ValidateOperation("file", allowedPath); err != nil {
+		t.Errorf("Expected path inside scope to be allowed, got error: %v", err)
+	}
+
+	// Path outside designated scope (even if inside workspace) -> rejected
+	outOfScopePath := filepath.Join(wsRoot, "docs", "README.md")
+	if err := scopedSb.ValidateOperation("file", outOfScopePath); err == nil {
+		t.Errorf("Expected path outside subagent scope to be rejected")
+	}
+
+	// Path outside entire workspace -> rejected
+	traversalPath := filepath.Join(wsRoot, "..", "etc", "hosts")
+	if err := scopedSb.ValidateOperation("file", traversalPath); err == nil {
+		t.Errorf("Expected path outside workspace to be rejected")
+	}
+}

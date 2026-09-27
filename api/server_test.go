@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"blackjak/agent"
+	"blackjak/protocol"
 )
 
 func TestServer_HealthEndpoint(t *testing.T) {
@@ -22,12 +23,12 @@ func TestServer_HealthEndpoint(t *testing.T) {
 		t.Fatalf("Expected HTTP 200, got %d", rec.Code)
 	}
 
-	var resp HealthResponse
+	var resp protocol.HealthResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if resp.Status != "ok" || resp.ProtocolVersion != ProtocolVersion {
+	if resp.Status != "ok" || resp.ProtocolVersion != protocol.ProtocolVersion {
 		t.Errorf("Unexpected health payload: %+v", resp)
 	}
 }
@@ -35,7 +36,7 @@ func TestServer_HealthEndpoint(t *testing.T) {
 func TestServer_CreateAndGetRun(t *testing.T) {
 	server := NewServer(ServerConfig{Host: "127.0.0.1", Port: 0, Workspace: "/tmp/test"}, nil)
 
-	payload := CreateRunPayload{Prompt: "Implement feature X"}
+	payload := protocol.CreateRunPayload{Prompt: "Implement feature X"}
 	body, _ := json.Marshal(payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/runs", bytes.NewReader(body))
@@ -47,7 +48,7 @@ func TestServer_CreateAndGetRun(t *testing.T) {
 		t.Fatalf("Expected HTTP 201 Created, got %d", rec.Code)
 	}
 
-	var apiResp APIResponse
+	var apiResp protocol.APIResponse
 	_ = json.NewDecoder(rec.Body).Decode(&apiResp)
 
 	if !apiResp.Success {
@@ -55,7 +56,7 @@ func TestServer_CreateAndGetRun(t *testing.T) {
 	}
 
 	runData, _ := json.Marshal(apiResp.Data)
-	var runDTO RunDTO
+	var runDTO protocol.RunDTO
 	_ = json.Unmarshal(runData, &runDTO)
 
 	if runDTO.Prompt != "Implement feature X" {

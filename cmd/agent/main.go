@@ -15,6 +15,11 @@ import (
 
 	"blackjak/agent"
 	"blackjak/api"
+	"blackjak/llm"
+	"blackjak/llm/providers/anthropic"
+	"blackjak/llm/providers/gemini"
+	"blackjak/llm/providers/openai"
+	"blackjak/memory"
 	"blackjak/workspace"
 )
 
@@ -22,7 +27,7 @@ func main() {
 	cliMode := flag.Bool("cli", false, "Run in interactive terminal CLI mode instead of server mode")
 	_ = flag.Bool("server", true, "Start the HTTP/WebSocket API server")
 	host := flag.String("host", "127.0.0.1", "Host address to listen on")
-	port := flag.Int("port", 0, "Port to listen on (0 for dynamic free port allocation)")
+	port := flag.Int("port", 47811, "Port to listen on (0 for dynamic free port allocation)")
 	wsDir := flag.String("workspace", "", "Path to working workspace directory")
 	flag.Parse()
 
@@ -99,7 +104,21 @@ func runCLI(wsDir string) {
 	broker := agent.NewEventBroker()
 	rm := agent.NewRunManager(broker)
 	ws := workspace.New(wsDir)
-	ag := agent.New(broker, nil, ws, nil)
+	ag := agent.New(broker, ws, nil)
+	ag.SetPersistentMemory(memory.NewPersistentMemory(
+		filepath.Join(wsDir, ".blackjak", "memory.json")))
+	ag.SetClientResolver(func(role string) llm.Client {
+		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+			return llm.NewProviderClient(anthropic.New(key, ""), "claude-sonnet-4.5")
+		}
+		if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+			return llm.NewProviderClient(openai.New(key, "", ""), "gpt-4o")
+		}
+		if key := os.Getenv("GEMINI_API_KEY"); key != "" {
+			return llm.NewProviderClient(gemini.New(key), "gemini-2.0-flash")
+		}
+		return nil
+	})
 
 	eventCh, _ := broker.Subscribe("")
 	go func() {

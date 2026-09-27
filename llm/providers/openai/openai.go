@@ -41,6 +41,35 @@ func (p *OpenAIProvider) Capabilities() llm.ProviderCapabilities {
 	}
 }
 
+// Ping verifies credentials with a real GET /models request.
+func (p *OpenAIProvider) Ping(ctx context.Context) error {
+	if p.apiKey == "" {
+		return fmt.Errorf("no API key configured — set OPENAI_API_KEY or enter a key in Settings")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if p.orgID != "" {
+		req.Header.Set("OpenAI-Organization", p.orgID)
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("authentication failed (HTTP %d) — check the API key", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected response: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (p *OpenAIProvider) ListModels(ctx context.Context) ([]llm.Model, error) {
 	catalog := p.GetCatalog()
 
@@ -152,9 +181,13 @@ func (p *OpenAIProvider) Chat(ctx context.Context, request llm.CompletionRequest
 	if p.apiKey == "" {
 		return nil, fmt.Errorf("OpenAI API Key is missing")
 	}
-	return &llm.CompletionResponse{
-		Content: "Response from OpenAI Provider",
-	}, nil
+	return llm.CompleteChatCompletion(ctx, llm.ChatCompletionConfig{
+		BaseURL: p.baseURL,
+		APIKey:  p.apiKey,
+		OrgID:   p.orgID,
+		Model:   request.Model,
+		Timeout: 120 * time.Second,
+	}, &request)
 }
 
 func (p *OpenAIProvider) Stream(ctx context.Context, request llm.CompletionRequest) (<-chan llm.StreamEvent, error) {

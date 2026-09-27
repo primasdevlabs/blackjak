@@ -13,7 +13,16 @@ import (
 	"time"
 
 	"blackjak/agent"
+	"blackjak/protocol"
+	"blackjak/workspace"
 )
+
+func strField(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
 
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -86,8 +95,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				msg := ServerMessage{
-					ProtocolVersion: ProtocolVersion,
+				msg := protocol.ServerMessage{
+					ProtocolVersion: protocol.ProtocolVersion,
 					Type:            string(evt.Type),
 					RunID:           evt.RunID,
 					AgentID:         evt.AgentID,
@@ -110,7 +119,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		var clientMsg ClientMessage
+		var clientMsg protocol.ClientMessage
 		if err := json.Unmarshal(payload, &clientMsg); err != nil {
 			continue
 		}
@@ -119,37 +128,60 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) processClientMessage(ws *WebSocketConn, msg ClientMessage) {
+func (s *Server) processClientMessage(ws *WebSocketConn, msg protocol.ClientMessage) {
 	switch msg.Type {
-	case ClientMsgPing:
-		pong := ServerMessage{
-			ProtocolVersion: ProtocolVersion,
+	case protocol.ClientMsgPing:
+		pong := protocol.ServerMessage{
+			ProtocolVersion: protocol.ProtocolVersion,
 			Type:            "pong",
 			Timestamp:       time.Now(),
 		}
 		data, _ := json.Marshal(pong)
 		_ = ws.WriteTextFrame(data)
 
-	case ClientMsgRunStart:
+	case protocol.ClientMsgHostHello:
+		raw, err := json.Marshal(msg.Data)
+		if err != nil {
+			break
+		}
+		var info protocol.HostInfo
+		if err := json.Unmarshal(raw, &info); err == nil && info.Name != "" {
+			s.SetHostInfo(info)
+		}
+
+	case protocol.ClientMsgRunStart:
 		prompt, _ := msg.Data["prompt"].(string)
 		wsPath, _ := msg.Data["workspace"].(string)
 		if wsPath == "" {
 			wsPath = s.workspace.RootPath
 		}
+		var attachments []workspace.Attachment
+		if raw, ok := msg.Data["attachments"].([]interface{}); ok {
+			for _, item := range raw {
+				if m, ok := item.(map[string]interface{}); ok {
+					attachments = append(attachments, workspace.Attachment{
+						ID:   strField(m, "id"),
+						Type: workspace.AttachmentType(strField(m, "type")),
+						Path: strField(m, "path"),
+						Name: strField(m, "name"),
+					})
+				}
+			}
+		}
 		if prompt != "" {
-			run := s.runManager.CreateRun(prompt, wsPath)
+			run := s.runManager.CreateRun(prompt, wsPath, attachments...)
 			go func() {
 				_ = s.agent.ExecuteRun(run.Context(), run, s.runManager)
 			}()
 		}
 
-	case ClientMsgRunCancel:
+	case protocol.ClientMsgRunCancel:
 		runID, _ := msg.Data["runId"].(string)
 		if runID != "" {
 			s.runManager.CancelRun(runID)
 		}
 
-	case ClientMsgApprovalRespond:
+	case protocol.ClientMsgApprovalRespond:
 		reqID, _ := msg.Data["requestId"].(string)
 		runID, _ := msg.Data["runId"].(string)
 		granted, _ := msg.Data["granted"].(bool)

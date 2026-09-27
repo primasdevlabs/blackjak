@@ -4,13 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"blackjak/agent"
 	cxt "blackjak/context"
+	"blackjak/llm"
+	"blackjak/protocol"
+	"blackjak/workspace"
 )
+
+// estimateTokens approximates the token footprint of a message list (~4 chars/token).
+func estimateTokens(msgs []llm.Message) int {
+	total := 0
+	for _, m := range msgs {
+		total += len(m.Content)
+	}
+	return total / 4
+}
 
 type CommandArgument struct {
 	Name        string `json:"name"`
@@ -68,42 +80,33 @@ func (cr *CommandRegistry) registerDefaults() {
 		Name:        "compact",
 		Description: "Compact context immediately",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
-			compactor := cxt.NewCompactor(128000)
-			objective := "Fix authentication refresh handling"
-			if obj, ok := args["objective"].(string); ok && obj != "" {
-				objective = obj
+			run := s.runManager.LatestRun()
+			if run == nil {
+				return nil, fmt.Errorf("no run to compact")
+			}
+			msgs := run.GetMessages()
+			before := estimateTokens(msgs)
+
+			if run.Status == agent.RunRunning || run.Status == agent.RunWaiting || run.Status == agent.RunPending {
+				// Live run — the loop performs the actual compaction and
+				// emits context.updated with real before/after counts.
+				if !run.RequestCompaction() {
+					return nil, fmt.Errorf("compaction already pending")
+				}
+				return map[string]interface{}{
+					"status":       "requested",
+					"tokensBefore": before,
+					"message":      "Compaction will apply at the next step.",
+				}, nil
 			}
 
-			compacted := compactor.Compact(objective, "Historical conversation and tool outputs log stream")
-			
-			res := map[string]interface{}{
-				"tokensBefore": compacted.TokensBefore,
-				"tokensAfter":  compacted.TokensAfter,
-				"tokensSaved":  compacted.TokensSaved,
-				"preserved": []string{
-					"Current task objective",
-					"Implementation decisions",
-					"Modified files state",
-					"Test results",
-					"Subagent findings",
-				},
-				"removed": []string{
-					"12 tool outputs",
-					"8 duplicate search results",
-					"4 superseded plans",
-				},
-				"compacted": compacted,
-			}
-
-			// Broadcast context compacted event
-			s.broker.Publish(agent.Event{
-				ID:        fmt.Sprintf("evt_%d", time.Now().UnixNano()),
-				Type:      agent.EventType("context.compacted"),
-				Timestamp: time.Now(),
-				Data:      res,
-			})
-
-			return res, nil
+			// Finished run — report what compacting its transcript would look like.
+			return map[string]interface{}{
+				"status":       "idle",
+				"tokensBefore": before,
+				"tokensAfter":  int(float64(before) * 0.35),
+				"message":      "Run is finished; context is no longer live.",
+			}, nil
 		},
 	})
 
@@ -112,16 +115,41 @@ func (cr *CommandRegistry) registerDefaults() {
 		Description: "Show context composition and budget",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
 			compactor := cxt.NewCompactor(128000)
-			budget := compactor.CalculateBudget(18800)
+			run := s.runManager.LatestRun()
+
+			var system, task, conversation, toolResults, agentSummaries int
+			if run != nil {
+				for _, m := range run.GetMessages() {
+					switch m.Role {
+					case "system":
+						system += len(m.Content) / 4
+					case "user":
+						if m.Content == run.Prompt {
+							task += len(m.Content) / 4
+						} else {
+							conversation += len(m.Content) / 4
+						}
+					case "assistant":
+						conversation += len(m.Content) / 4
+					case "tool":
+						toolResults += len(m.Content) / 4
+					}
+				}
+				for _, sub := range run.Subagents {
+					agentSummaries += len(sub.Result) / 4
+				}
+			}
+
+			total := system + task + conversation + toolResults + agentSummaries
+			budget := compactor.CalculateBudget(total)
 			return map[string]interface{}{
-				"system":          4200,
-				"task":            1100,
-				"conversation":    3700,
-				"files":           6400,
-				"toolResults":     2100,
-				"agentSummaries":  1300,
-				"total":           18800,
-				"limit":           128000,
+				"system":          system,
+				"task":            task,
+				"conversation":    conversation,
+				"toolResults":     toolResults,
+				"agentSummaries":  agentSummaries,
+				"total":           total,
+				"limit":           compactor.MaxContextWindow,
 				"pressure":        int(budget.Pressure * 100),
 				"usedTokens":      budget.UsedTokens,
 				"availableTokens": budget.AvailableTokens,
@@ -134,9 +162,11 @@ func (cr *CommandRegistry) registerDefaults() {
 		Name:        "clear",
 		Description: "Start fresh context",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
+			removed := s.runManager.ClearFinished()
 			return map[string]interface{}{
-				"cleared": true,
-				"message": "Conversation context cleared while preserving workspace files and state.",
+				"cleared":      true,
+				"runsCleared":  removed,
+				"message":      "Finished run history cleared.",
 			}, nil
 		},
 	})
@@ -145,32 +175,57 @@ func (cr *CommandRegistry) registerDefaults() {
 		Name:        "summarize",
 		Description: "Create durable task summary",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
+			run := s.runManager.LatestRun()
+			if run == nil {
+				return nil, fmt.Errorf("no run to summarize")
+			}
+
+			completed := []string{}
+			remaining := []string{}
+			if run.Plan != nil {
+				for i, step := range run.Plan.Steps {
+					if i < run.Plan.CurrentStep {
+						completed = append(completed, step)
+					} else {
+						remaining = append(remaining, step)
+					}
+				}
+			}
+
+			files := []cxt.FileState{}
+			for _, fc := range run.FileChanges {
+				status := "M"
+				switch fc.Type {
+				case workspace.ChangeCreated:
+					status = "A"
+				case workspace.ChangeDeleted:
+					status = "D"
+				}
+				files = append(files, cxt.FileState{Path: fc.Path, Status: status})
+			}
+
 			return map[string]interface{}{
-				"objective": "Fix token expiration handling and middleware integration",
-				"workspace": s.workspace.RootPath,
-				"completed": []string{
-					"Located token validation path",
-					"Updated expiration comparison",
-					"Added middleware handling",
-				},
-				"remaining": []string{
-					"Add regression test suite",
-					"Verify auth pipeline",
-				},
-				"files": []cxt.FileState{
-					{Path: "internal/auth/token.go", Status: "M"},
-					{Path: "internal/auth/middleware.go", Status: "M"},
-					{Path: "internal/auth/token_test.go", Status: "A"},
-				},
+				"objective": run.Prompt,
+				"workspace": run.Workspace,
+				"status":    string(run.Status),
+				"completed": completed,
+				"remaining": remaining,
+				"files":     files,
+				"subagents": len(run.Subagents),
+				"steps":     len(run.GetEvents()),
 			}, nil
 		},
 	})
 
 	cr.Register(AgentCommand{
 		Name:        "plan",
-		Description: "Create or update plan",
+		Description: "Show the current task plan",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
-			return map[string]interface{}{"status": "plan_viewed"}, nil
+			run := s.runManager.LatestRun()
+			if run == nil || run.Plan == nil {
+				return map[string]interface{}{"steps": []string{}, "currentStep": 0}, nil
+			}
+			return run.Plan, nil
 		},
 	})
 
@@ -180,9 +235,8 @@ func (cr *CommandRegistry) registerDefaults() {
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
 			model, _ := args["model"].(string)
 			if model != "" {
-				cfg := s.settingsManager.GetConfig()
-				cfg.CodingModelID = model
-				s.settingsManager.UpdateConfig(cfg)
+				raw, _ := json.Marshal(model)
+				s.settingsManager.ApplyPatch(map[string]json.RawMessage{"codingModelId": raw})
 			}
 			return map[string]interface{}{"codingModelId": s.settingsManager.GetConfig().CodingModelID}, nil
 		},
@@ -194,9 +248,8 @@ func (cr *CommandRegistry) registerDefaults() {
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
 			effort, _ := args["effort"].(string)
 			if effort != "" {
-				cfg := s.settingsManager.GetConfig()
-				cfg.Effort = EffortLevel(effort)
-				s.settingsManager.UpdateConfig(cfg)
+				raw, _ := json.Marshal(effort)
+				s.settingsManager.ApplyPatch(map[string]json.RawMessage{"effort": raw})
 			}
 			return map[string]interface{}{"effort": s.settingsManager.GetConfig().Effort}, nil
 		},
@@ -206,7 +259,11 @@ func (cr *CommandRegistry) registerDefaults() {
 		Name:        "agents",
 		Description: "Show active subagents",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
-			return map[string]interface{}{"status": "active_agents_retrieved"}, nil
+			run := s.runManager.LatestRun()
+			if run == nil {
+				return map[string]interface{}{"subagents": []interface{}{}}, nil
+			}
+			return map[string]interface{}{"subagents": run.Subagents}, nil
 		},
 	})
 
@@ -222,15 +279,26 @@ func (cr *CommandRegistry) registerDefaults() {
 		Name:        "changes",
 		Description: "Show modified files diffs",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
-			return map[string]interface{}{"status": "changes_retrieved"}, nil
+			run := s.runManager.LatestRun()
+			if run == nil {
+				return map[string]interface{}{"changes": []interface{}{}}, nil
+			}
+			return map[string]interface{}{"changes": run.FileChanges}, nil
 		},
 	})
 
 	cr.Register(AgentCommand{
 		Name:        "files",
-		Description: "Attach or view files",
+		Description: "View run file attachments and references",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
-			return map[string]interface{}{"status": "files_attached"}, nil
+			run := s.runManager.LatestRun()
+			if run == nil {
+				return map[string]interface{}{"attachments": []interface{}{}, "references": []interface{}{}}, nil
+			}
+			return map[string]interface{}{
+				"attachments": run.Attachments,
+				"references":  run.References,
+			}, nil
 		},
 	})
 
@@ -238,7 +306,18 @@ func (cr *CommandRegistry) registerDefaults() {
 		Name:        "undo",
 		Description: "Undo last agent action",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
-			return map[string]interface{}{"status": "undone"}, nil
+			run := s.runManager.LatestRun()
+			if run == nil || len(run.FileChanges) == 0 {
+				return nil, fmt.Errorf("nothing to undo")
+			}
+			last := run.FileChanges[len(run.FileChanges)-1]
+			if last.Type == workspace.ChangeCreated {
+				if err := os.Remove(last.Path); err != nil {
+					return nil, fmt.Errorf("undo failed: %w", err)
+				}
+				return map[string]interface{}{"status": "reverted", "path": last.Path}, nil
+			}
+			return nil, fmt.Errorf("cannot revert a %s change — restore from git or backup", last.Type)
 		},
 	})
 
@@ -246,7 +325,14 @@ func (cr *CommandRegistry) registerDefaults() {
 		Name:        "stop",
 		Description: "Stop agent execution",
 		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
-			return map[string]interface{}{"status": "stopped"}, nil
+			run := s.runManager.LatestRun()
+			if run == nil {
+				return nil, fmt.Errorf("no run to stop")
+			}
+			if s.runManager.CancelRun(run.ID) {
+				return map[string]interface{}{"status": "cancelled", "runId": run.ID}, nil
+			}
+			return map[string]interface{}{"status": string(run.Status), "runId": run.ID}, nil
 		},
 	})
 }
@@ -258,7 +344,7 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmds := s.commandRegistry.List()
-	writeJSON(w, http.StatusOK, APIResponse{
+	writeJSON(w, http.StatusOK, protocol.APIResponse{
 		Success: true,
 		Data:    cmds,
 	})
@@ -293,7 +379,7 @@ func (s *Server) handleExecuteCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, APIResponse{
+	writeJSON(w, http.StatusOK, protocol.APIResponse{
 		Success: true,
 		Data:    result,
 	})

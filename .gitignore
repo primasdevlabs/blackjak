@@ -8,15 +8,16 @@ bin/
 
 # Node dependencies and build outputs
 node_modules/
-ui/node_modules/
-ui/dist/
-extension/vscode/node_modules/
-extension/vscode/out/
+extension/node_modules/
+extension/out/
+extension/webview/react/node_modules/
+extension/webview/react/dist/
 
 # Environment and local settings
 .env
 .env.local
 *.log
+.blackjak/
 
 # OS & Editor files
 .DS_Store

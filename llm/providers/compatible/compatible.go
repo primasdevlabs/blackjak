@@ -45,6 +45,32 @@ func (p *CompatibleProvider) Capabilities() llm.ProviderCapabilities {
 	}
 }
 
+// Ping verifies the endpoint is reachable with a real GET /models request.
+// Local servers (Ollama, LM Studio) often need no key.
+func (p *CompatibleProvider) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
+	if err != nil {
+		return err
+	}
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected response: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (p *CompatibleProvider) ListModels(ctx context.Context) ([]llm.Model, error) {
 	endpoint := p.baseURL + "/models"
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
@@ -108,9 +134,16 @@ func (p *CompatibleProvider) categorizeModel(id string) llm.Model {
 }
 
 func (p *CompatibleProvider) Chat(ctx context.Context, request llm.CompletionRequest) (*llm.CompletionResponse, error) {
-	return &llm.CompletionResponse{
-		Content: fmt.Sprintf("Response from OpenAI-compatible provider at %s using model %s", p.baseURL, p.modelID),
-	}, nil
+	model := request.Model
+	if model == "" {
+		model = p.modelID
+	}
+	return llm.CompleteChatCompletion(ctx, llm.ChatCompletionConfig{
+		BaseURL: p.baseURL,
+		APIKey:  p.apiKey,
+		Model:   model,
+		Timeout: 180 * time.Second,
+	}, &request)
 }
 
 func (p *CompatibleProvider) Stream(ctx context.Context, request llm.CompletionRequest) (<-chan llm.StreamEvent, error) {

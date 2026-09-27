@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"blackjak/agent"
+	"blackjak/protocol"
 )
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -17,7 +18,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, APIResponse{
+	writeJSON(w, status, protocol.APIResponse{
 		Success: false,
 		Error:   message,
 	})
@@ -29,7 +30,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":          "ok",
 		"ready":           true,
 		"version":         "1.0.0",
-		"protocolVersion": ProtocolVersion,
+		"protocolVersion": protocol.ProtocolVersion,
 		"port":            s.Port(),
 		"workspace":       s.workspace.RootPath,
 		"timestamp":       time.Now(),
@@ -45,14 +46,14 @@ func (s *Server) handleInitialState(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.settingsManager.GetMaskedConfig()
 	runs := s.runManager.ListRuns()
-	dtos := make([]RunDTO, len(runs))
+	dtos := make([]protocol.RunDTO, len(runs))
 	for i, r := range runs {
-		dtos[i] = toRunDTO(r)
+		dtos[i] = toRun(r)
 	}
 	queue := s.queueManager.List()
 	modelsMap := s.settingsManager.RefreshModels("")
 
-	writeJSON(w, http.StatusOK, APIResponse{
+	writeJSON(w, http.StatusOK, protocol.APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
 			"type": "agent.initialized",
@@ -71,6 +72,7 @@ func (s *Server) handleInitialState(w http.ResponseWriter, r *http.Request) {
 					"promptQueue":   true,
 					"effortControl": true,
 				},
+				"host": s.HostInfo(),
 			},
 		},
 	})
@@ -81,15 +83,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg := s.settingsManager.GetMaskedConfig()
-		writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: cfg})
+		writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: cfg})
 	case http.MethodPatch, http.MethodPost:
-		var newCfg SettingsConfig
-		if err := json.NewDecoder(r.Body).Decode(&newCfg); err != nil {
+		var patch map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			writeError(w, http.StatusBadRequest, "Invalid settings payload")
 			return
 		}
-		s.settingsManager.UpdateConfig(newCfg)
-		writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: s.settingsManager.GetMaskedConfig()})
+		s.settingsManager.ApplyPatch(patch)
+		writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: s.settingsManager.GetMaskedConfig()})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
@@ -106,7 +108,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	for name := range cfg.Providers {
 		providersList = append(providersList, name)
 	}
-	writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{
+	writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: map[string]interface{}{
 		"active":    cfg.ActiveProvider,
 		"providers": providersList,
 	}})
@@ -125,7 +127,7 @@ func (s *Server) handleProviderSubroutes(w http.ResponseWriter, r *http.Request)
 	providerID := parts[0]
 	if len(parts) >= 2 && parts[1] == "test" && r.Method == http.MethodPost {
 		success, msg, models := s.settingsManager.TestProvider(providerID)
-		writeJSON(w, http.StatusOK, APIResponse{
+		writeJSON(w, http.StatusOK, protocol.APIResponse{
 			Success: success,
 			Data: map[string]interface{}{
 				"message": msg,
@@ -138,7 +140,7 @@ func (s *Server) handleProviderSubroutes(w http.ResponseWriter, r *http.Request)
 	if len(parts) >= 2 && parts[1] == "refresh" && (r.Method == http.MethodPost || r.Method == http.MethodGet) {
 		catalogMap := s.settingsManager.RefreshModels(providerID)
 		models := catalogMap[providerID]
-		writeJSON(w, http.StatusOK, APIResponse{
+		writeJSON(w, http.StatusOK, protocol.APIResponse{
 			Success: true,
 			Data:    models,
 		})
@@ -147,7 +149,7 @@ func (s *Server) handleProviderSubroutes(w http.ResponseWriter, r *http.Request)
 
 	if len(parts) >= 2 && parts[1] == "models" && r.Method == http.MethodGet {
 		catalogMap := s.settingsManager.RefreshModels(providerID)
-		writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: catalogMap[providerID]})
+		writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: catalogMap[providerID]})
 		return
 	}
 
@@ -159,7 +161,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		items := s.queueManager.List()
-		writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: items})
+		writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: items})
 	case http.MethodPost:
 		var req struct {
 			Prompt       string   `json:"prompt"`
@@ -171,7 +173,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item := s.queueManager.Add(req.Prompt, req.Mode, req.Dependencies)
-		writeJSON(w, http.StatusCreated, APIResponse{Success: true, Data: item})
+		writeJSON(w, http.StatusCreated, protocol.APIResponse{Success: true, Data: item})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
@@ -190,13 +192,28 @@ func (s *Server) handleQueueSubroutes(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 	if r.Method == http.MethodDelete {
 		s.queueManager.Remove(id)
-		writeJSON(w, http.StatusOK, APIResponse{Success: true})
+		writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true})
 		return
 	}
 
 	if len(parts) >= 2 && parts[1] == "run" && r.Method == http.MethodPost {
+		item, ok := s.queueManager.Get(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, "Queue item not found")
+			return
+		}
+		run := s.runManager.CreateRun(item.Prompt, s.workspace.RootPath)
 		s.queueManager.SetStatus(id, agent.QueueStatusRunning)
-		writeJSON(w, http.StatusOK, APIResponse{Success: true})
+		item.RunID = run.ID
+		go func() {
+			err := s.agent.ExecuteRun(run.Context(), run, s.runManager)
+			if err != nil {
+				s.queueManager.SetStatus(id, agent.QueueStatusFailed)
+			} else {
+				s.queueManager.SetStatus(id, agent.QueueStatusCompleted)
+			}
+		}()
+		writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: map[string]interface{}{"runId": run.ID}})
 		return
 	}
 
@@ -210,7 +227,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req CreateRunPayload
+	var req protocol.CreateRunPayload
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON body")
 		return
@@ -232,8 +249,8 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		_ = s.agent.ExecuteRun(run.Context(), run, s.runManager)
 	}()
 
-	dto := toRunDTO(run)
-	writeJSON(w, http.StatusCreated, APIResponse{
+	dto := toRun(run)
+	writeJSON(w, http.StatusCreated, protocol.APIResponse{
 		Success: true,
 		Data:    dto,
 	})
@@ -247,12 +264,12 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runs := s.runManager.ListRuns()
-	dtos := make([]RunDTO, len(runs))
+	dtos := make([]protocol.RunDTO, len(runs))
 	for i, r := range runs {
-		dtos[i] = toRunDTO(r)
+		dtos[i] = toRun(r)
 	}
 
-	writeJSON(w, http.StatusOK, APIResponse{
+	writeJSON(w, http.StatusOK, protocol.APIResponse{
 		Success: true,
 		Data:    dtos,
 	})
@@ -276,15 +293,20 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 1 {
-		// GET /api/runs/:id
-		if r.Method == http.MethodGet {
-			writeJSON(w, http.StatusOK, APIResponse{
+		switch r.Method {
+		case http.MethodGet:
+			// GET /api/runs/:id
+			writeJSON(w, http.StatusOK, protocol.APIResponse{
 				Success: true,
-				Data:    toRunDTO(run),
+				Data:    toRun(run),
 			})
-			return
+		case http.MethodDelete:
+			// DELETE /api/runs/:id — removes run + its event history
+			s.runManager.DeleteRun(runID)
+			writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -297,9 +319,9 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		success := s.runManager.CancelRun(runID)
-		writeJSON(w, http.StatusOK, APIResponse{
+		writeJSON(w, http.StatusOK, protocol.APIResponse{
 			Success: success,
-			Data:    toRunDTO(run),
+			Data:    toRun(run),
 		})
 
 	case "approval":
@@ -308,7 +330,7 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 			return
 		}
-		var payload ApprovalPayload
+		var payload protocol.ApprovalPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			writeError(w, http.StatusBadRequest, "Invalid JSON body")
 			return
@@ -322,9 +344,9 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, APIResponse{
+		writeJSON(w, http.StatusOK, protocol.APIResponse{
 			Success: true,
-			Data:    toRunDTO(run),
+			Data:    toRun(run),
 		})
 
 	default:
@@ -365,7 +387,7 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func toRunDTO(r *agent.Run) RunDTO {
+func toRun(r *agent.Run) protocol.RunDTO {
 	var subagentList []*agent.Subagent
 	if r.Orchestration != nil {
 		subagentList = r.Orchestration.ListSubagents()
@@ -373,7 +395,7 @@ func toRunDTO(r *agent.Run) RunDTO {
 		subagentList = r.Subagents
 	}
 
-	return RunDTO{
+	return protocol.RunDTO{
 		ID:          r.ID,
 		Prompt:      r.Prompt,
 		Workspace:   r.Workspace,

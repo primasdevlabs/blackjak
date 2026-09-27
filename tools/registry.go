@@ -2,13 +2,24 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
+
+	"blackjak/llm"
+	"blackjak/workspace"
 )
+
+// ApprovalFunc gates destructive operations. It returns true if the operation
+// may proceed. Implementations may block waiting on a human decision.
+type ApprovalFunc func(ctx context.Context, operation, description string) (bool, error)
 
 // Tool defines the interface for executable agent capabilities.
 type Tool interface {
 	Name() string
 	Description() string
+	// Schema returns a JSON Schema object describing the arguments.
+	Schema() interface{}
 	Execute(ctx context.Context, args map[string]interface{}) (interface{}, error)
 }
 
@@ -36,4 +47,81 @@ func (r *Registry) Get(name string) (Tool, error) {
 		return nil, fmt.Errorf("tool not found: %s", name)
 	}
 	return t, nil
+}
+
+// List returns all registered tools sorted by name.
+func (r *Registry) List() []Tool {
+	out := make([]Tool, 0, len(r.tools))
+	for _, t := range r.tools {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	return out
+}
+
+// Schemas returns llm.Tool definitions for every registered tool.
+func (r *Registry) Schemas() []llm.Tool {
+	defs := make([]llm.Tool, 0, len(r.tools))
+	for _, t := range r.List() {
+		defs = append(defs, llm.Tool{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  t.Schema(),
+		})
+	}
+	return defs
+}
+
+// DefaultRegistry builds the standard tool set for a workspace. The approval
+// callback is invoked before destructive shell commands and file deletions.
+func DefaultRegistry(ws *workspace.Workspace, approve ApprovalFunc, mem Store) *Registry {
+	r := NewRegistry()
+	fs := &FilesystemTool{ws: ws}
+	r.Register(fs)
+	r.Register(&ShellTool{ws: ws, approve: approve})
+	r.Register(&SearchTool{ws: ws})
+	r.Register(&GitTool{ws: ws, approve: approve})
+	r.Register(&TestTool{ws: ws})
+	if mem != nil {
+		r.Register(&MemoryTool{store: mem})
+	}
+	return r
+}
+
+// Store is the memory surface used by the memory tool.
+type Store interface {
+	Get(ctx context.Context, key string) (interface{}, error)
+	Set(ctx context.Context, key string, value interface{}) error
+	Delete(ctx context.Context, key string) error
+	Keys(ctx context.Context) ([]string, error)
+}
+
+// arg helpers ----------------------------------------------------------------
+
+func argString(args map[string]interface{}, key string) string {
+	if v, ok := args[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func argInt(args map[string]interface{}, key string, def int) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return def
+}
+
+func argBool(args map[string]interface{}, key string) bool {
+	if v, ok := args[key].(bool); ok {
+		return v
+	}
+	return false
 }

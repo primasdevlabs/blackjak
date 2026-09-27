@@ -11,8 +11,10 @@ type Client interface {
 
 // CompletionRequest holds inputs sent to the LLM.
 type CompletionRequest struct {
-	Messages []Message
-	Tools    []Tool
+	Model     string
+	Messages  []Message
+	Tools     []Tool
+	MaxTokens int
 }
 
 // CompletionResponse holds output returned by the LLM.
@@ -26,4 +28,7 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments string
+	// ThoughtSignature carries Gemini's per-call signature that must be echoed
+	// back verbatim in subsequent requests.
+	ThoughtSignature string
 }

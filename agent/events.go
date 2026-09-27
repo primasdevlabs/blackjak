@@ -2,6 +2,7 @@ package agent
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -84,6 +85,7 @@ type Event struct {
 	RunID     string    `json:"runId"`
 	AgentID   string    `json:"agentId,omitempty"`
 	Type      EventType `json:"type"`
+	Sequence  uint64    `json:"sequence"`
 	Timestamp time.Time `json:"timestamp"`
 	Data      any       `json:"data"`
 }
@@ -92,6 +94,7 @@ type Event struct {
 type EventBroker struct {
 	mu          sync.RWMutex
 	subscribers map[chan Event]string // chan -> optional filter runID ("" for all)
+	seq         atomic.Uint64
 }
 
 // NewEventBroker initializes a new EventBroker.
@@ -123,6 +126,10 @@ func (b *EventBroker) Subscribe(runID string) (<-chan Event, func()) {
 
 // Publish broadcasts an event to all matching subscribers non-blockingly.
 func (b *EventBroker) Publish(event Event) {
+	if event.Sequence == 0 {
+		event.Sequence = b.seq.Add(1)
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 

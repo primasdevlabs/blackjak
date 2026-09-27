@@ -69,6 +69,18 @@ func (qm *QueueManager) Add(prompt, mode string, dependencies []string) *QueuedP
 	return item
 }
 
+// Get returns a queued item by ID.
+func (qm *QueueManager) Get(id string) (*QueuedPrompt, bool) {
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
+	for _, item := range qm.items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return nil, false
+}
+
 // List returns all queued items in current order.
 func (qm *QueueManager) List() []*QueuedPrompt {
 	qm.mu.RLock()
