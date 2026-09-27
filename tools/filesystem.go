@@ -13,10 +13,16 @@ import (
 
 const maxReadBytes = 256 * 1024
 
+// maxSnapshotBytes bounds the pre-change content snapshot kept for the
+// approve/decline review workflow. Files larger than this get changes
+// tracked but are not revertible.
+const maxSnapshotBytes = 512 * 1024
+
 // FilesystemTool enables reading, writing, editing and listing files within
 // the workspace boundary.
 type FilesystemTool struct {
-	ws *workspace.Workspace
+	ws     *workspace.Workspace
+	policy Policy
 }
 
 func (f *FilesystemTool) Name() string { return "filesystem" }
@@ -79,8 +85,14 @@ func (f *FilesystemTool) Execute(ctx context.Context, args map[string]interface{
 	case "read":
 		return f.read(abs, argInt(args, "offset", 0), argInt(args, "limit", 500))
 	case "write":
+		if err := f.policy.CheckWrite(path); err != nil {
+			return nil, err
+		}
 		return f.write(abs, argString(args, "content"))
 	case "edit":
+		if err := f.policy.CheckWrite(path); err != nil {
+			return nil, err
+		}
 		return f.edit(abs, argString(args, "old_string"), argString(args, "new_string"))
 	case "list":
 		return f.list(abs, argInt(args, "limit", 500))
@@ -121,6 +133,7 @@ func (f *FilesystemTool) read(abs string, offset, limit int) (interface{}, error
 }
 
 func (f *FilesystemTool) write(abs, content string) (interface{}, error) {
+	prev, existed, lost := f.snapshot(abs)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return nil, err
 	}
@@ -128,7 +141,13 @@ func (f *FilesystemTool) write(abs, content string) (interface{}, error) {
 		return nil, err
 	}
 	rel, _ := filepath.Rel(f.ws.RootPath, abs)
-	return map[string]interface{}{"path": filepath.ToSlash(rel), "bytes": len(content)}, nil
+	return map[string]interface{}{
+		"path":           filepath.ToSlash(rel),
+		"bytes":          len(content),
+		"existed":        existed,
+		"previousContent": prev,
+		"snapshotLost":   lost,
+	}, nil
 }
 
 func (f *FilesystemTool) edit(abs, oldStr, newStr string) (interface{}, error) {
@@ -144,11 +163,39 @@ func (f *FilesystemTool) edit(abs, oldStr, newStr string) (interface{}, error) {
 	if count > 1 {
 		return nil, fmt.Errorf("old_string matches %d locations; provide more context for a unique match", count)
 	}
+	prev, lost := text, false
+	if len(data) > maxSnapshotBytes {
+		prev, lost = "", true
+	}
 	if err := os.WriteFile(abs, []byte(strings.Replace(text, oldStr, newStr, 1)), 0o644); err != nil {
 		return nil, err
 	}
 	rel, _ := filepath.Rel(f.ws.RootPath, abs)
-	return map[string]interface{}{"path": filepath.ToSlash(rel), "replaced": 1}, nil
+	return map[string]interface{}{
+		"path":           filepath.ToSlash(rel),
+		"replaced":       1,
+		"existed":        true,
+		"previousContent": prev,
+		"snapshotLost":   lost,
+	}, nil
+}
+
+// snapshot reads the file's current contents before a mutating write so a
+// declined change can be reverted. existed reports whether the file was
+// already on disk; lost reports that a snapshot could not be captured.
+func (f *FilesystemTool) snapshot(abs string) (content string, existed bool, lost bool) {
+	info, err := os.Stat(abs)
+	if err != nil || info.IsDir() {
+		return "", false, false
+	}
+	if info.Size() > maxSnapshotBytes {
+		return "", true, true
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", true, true
+	}
+	return string(data), true, false
 }
 
 var skipDirs = map[string]bool{

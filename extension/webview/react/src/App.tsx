@@ -7,6 +7,7 @@ import { Chat } from './components/Chat';
 import { apiClient } from './api/client';
 import { resolveAgentEndpoint } from './api/endpoint';
 import { LiveActivity } from './components/LiveActivity';
+import { ChangeTracker } from './components/ChangeTracker';
 import { CompletionCard } from './components/CompletionCard';
 import { AgentResult } from './components/AgentResult';
 import { Plan } from './components/Plan';
@@ -48,6 +49,8 @@ import {
   ExclamationTriangleIcon,
   ArrowDownTrayIcon,
   DocumentDuplicateIcon,
+  PauseIcon,
+  PlayIcon,
 } from '@heroicons/react/24/outline';
 import './App.css';
 
@@ -97,6 +100,8 @@ export const App: React.FC = () => {
     loadRunFromHistory,
     deleteRunFromHistory,
     retryLastRun,
+    pauseTask,
+    resumeTask,
   } = useAgent();
 
   const [settings, setSettings] = useState(settingsStore.getSettings());
@@ -169,6 +174,20 @@ export const App: React.FC = () => {
     const endpoint = resolveAgentEndpoint();
     configureBackend(endpoint.httpUrl, endpoint.wsUrl);
 
+    // Extension host pushes the authoritative backend endpoint once the
+    // agent process is ready (covers startup races and port changes).
+    const handleHostMessage = (e: MessageEvent) => {
+      const msg = e.data;
+      if (msg && msg.type === 'agent.endpoint' && msg.data?.port) {
+        const httpUrl = `http://${msg.data.host || '127.0.0.1'}:${msg.data.port}`;
+        const wsUrl = `ws://${msg.data.host || '127.0.0.1'}:${msg.data.port}/ws`;
+        if (wsUrl !== agentStore.getState().wsUrl) {
+          configureBackend(httpUrl, wsUrl);
+        }
+      }
+    };
+    window.addEventListener('message', handleHostMessage);
+
     const unsubSettings = settingsStore.subscribe(() => {
       setSettings(settingsStore.getSettings());
     });
@@ -185,6 +204,7 @@ export const App: React.FC = () => {
     return () => {
       unsubSettings();
       window.removeEventListener('keydown', handleGlobalKeyDown);
+      window.removeEventListener('message', handleHostMessage);
     };
   }, []);
 
@@ -337,6 +357,9 @@ export const App: React.FC = () => {
     }
     if (activeRunStatus === 'running' || activeRunStatus === 'waiting' || activeRunStatus === 'pending') {
       queueStore.addPrompt(text, settings.mode);
+    } else if (activeRunStatus === 'paused' || activeRunStatus === 'cancelled') {
+      // Resume from checkpoint with the new instruction appended to context.
+      resumeTask(text);
     } else {
       startTask(text);
     }
@@ -528,6 +551,30 @@ export const App: React.FC = () => {
             thought={thought}
           />
 
+          <ChangeTracker changes={fileChanges} subagents={subagents} />
+
+          {activeRunStatus === 'paused' && (
+            <div className="retry-bar">
+              <PauseIcon className="icon-sm" />
+              <span>Paused — context saved, resume anytime</span>
+              <button className="chip-btn" onClick={() => resumeTask()}>
+                <PlayIcon className="icon-sm" />
+                <span>Resume</span>
+              </button>
+            </div>
+          )}
+
+          {activeRunStatus === 'cancelled' && (
+            <div className="retry-bar">
+              <StopIcon className="icon-sm" />
+              <span>Stopped — context checkpointed</span>
+              <button className="chip-btn" onClick={() => resumeTask()}>
+                <PlayIcon className="icon-sm" />
+                <span>Resume</span>
+              </button>
+            </div>
+          )}
+
           {activeRunStatus === 'failed' && (
             <div className="retry-bar">
               <ExclamationTriangleIcon className="icon-sm" />
@@ -535,6 +582,10 @@ export const App: React.FC = () => {
               <button className="chip-btn" onClick={retryLastRun}>
                 <ArrowPathIcon className="icon-sm" />
                 <span>Retry</span>
+              </button>
+              <button className="chip-btn" onClick={() => resumeTask()} title="Resume from checkpointed context">
+                <PlayIcon className="icon-sm" />
+                <span>Resume</span>
               </button>
             </div>
           )}
@@ -709,8 +760,17 @@ export const App: React.FC = () => {
                 <span>Local</span>
               </span>
               {isWorking ? (
-                <button className="composer-send-btn composer-send-btn-stop" onClick={cancelTask} title="Stop">
-                  <StopIcon className="icon-sm" />
+                <>
+                  <button className="composer-send-btn" onClick={pauseTask} title="Pause — context stays saved">
+                    <PauseIcon className="icon-sm" />
+                  </button>
+                  <button className="composer-send-btn composer-send-btn-stop" onClick={cancelTask} title="Stop">
+                    <StopIcon className="icon-sm" />
+                  </button>
+                </>
+              ) : activeRunStatus === 'paused' ? (
+                <button className="composer-send-btn" onClick={() => resumeTask()} title="Resume">
+                  <PlayIcon className="icon-sm" />
                 </button>
               ) : (
                 <button className="composer-send-btn" onClick={handleComposerSubmit} disabled={status === 'disconnected' || !composerInput.trim()} title="Send">

@@ -14,6 +14,7 @@ import (
 	"blackjak/llm/providers/compatible"
 	"blackjak/llm/providers/gemini"
 	"blackjak/llm/providers/openai"
+	"blackjak/tools"
 )
 
 // StorageMode defines how credentials are persisted.
@@ -42,6 +43,18 @@ const (
 	ModePlan AgentMode = "plan"
 	ModeCode AgentMode = "code"
 )
+
+// GuardrailsConfig controls what the agent is allowed to do.
+// Enforced inside the tools — the UI cannot widen it.
+type GuardrailsConfig struct {
+	Mode             string   `json:"mode"` // "supervised" | "readonly" | "autonomous"
+	ShellAllowed     bool     `json:"shellAllowed"`
+	ApproveAllShell  bool     `json:"approveAllShell"` // prompt for every command, not just destructive
+	DenyCommands     []string `json:"denyCommands"`    // substring rules — always blocked
+	ProtectedPaths   []string `json:"protectedPaths"`  // workspace-relative globs — never writable
+	SubagentsAllowed bool     `json:"subagentsAllowed"`
+	MaxSteps         int      `json:"maxSteps"` // tool-loop iteration cap (0 = default 60)
+}
 
 // ProviderCredentials holds provider connection settings.
 type ProviderCredentials struct {
@@ -74,6 +87,7 @@ type SettingsConfig struct {
 	AutoOpenDiff        bool                           `json:"autoOpenDiff"`
 	AskDestructiveOps   bool                           `json:"askDestructiveOps"`
 	ModelRoutes         map[string]string              `json:"modelRoutes"` // task -> role
+	Guardrails          GuardrailsConfig               `json:"guardrails"`
 }
 
 // SettingsManager thread-safely manages system settings, providers, and masked credentials.
@@ -123,6 +137,15 @@ func NewSettingsManager() *SettingsManager {
 		AutoOpenFile:        true,
 		AutoOpenDiff:        true,
 		AskDestructiveOps:   true,
+		Guardrails: GuardrailsConfig{
+			Mode:             "supervised",
+			ShellAllowed:     true,
+			ApproveAllShell:  false,
+			SubagentsAllowed: true,
+			MaxSteps:         60,
+			DenyCommands:     nil, // nil → policy defaults
+			ProtectedPaths:   nil,
+		},
 		Providers: map[string]ProviderCredentials{
 			"OpenAI":            {BaseURL: "https://api.openai.com/v1", StorageMode: StorageEnvironment},
 			"Google Gemini":     {StorageMode: StorageEnvironment},
@@ -333,6 +356,53 @@ func (sm *SettingsManager) ApplyPatch(patch map[string]json.RawMessage) {
 	boolean("autoOpenDiff", &sm.config.AutoOpenDiff)
 	boolean("askDestructiveOps", &sm.config.AskDestructiveOps)
 
+	// Guardrails merge field-by-field so a partial PATCH can't zero out
+	// sibling rules.
+	if raw, ok := patch["guardrails"]; ok {
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) == nil {
+			g := &sm.config.Guardrails
+			strOr := func(key string, dst *string) {
+				if r, ok := m[key]; ok {
+					var v string
+					if json.Unmarshal(r, &v) == nil {
+						*dst = v
+					}
+				}
+			}
+			boolOr := func(key string, dst *bool) {
+				if r, ok := m[key]; ok {
+					var v bool
+					if json.Unmarshal(r, &v) == nil {
+						*dst = v
+					}
+				}
+			}
+			strOr("mode", &g.Mode)
+			boolOr("shellAllowed", &g.ShellAllowed)
+			boolOr("approveAllShell", &g.ApproveAllShell)
+			boolOr("subagentsAllowed", &g.SubagentsAllowed)
+			if r, ok := m["maxSteps"]; ok {
+				var v int
+				if json.Unmarshal(r, &v) == nil {
+					g.MaxSteps = v
+				}
+			}
+			if r, ok := m["denyCommands"]; ok {
+				var v []string
+				if json.Unmarshal(r, &v) == nil {
+					g.DenyCommands = v
+				}
+			}
+			if r, ok := m["protectedPaths"]; ok {
+				var v []string
+				if json.Unmarshal(r, &v) == nil {
+					g.ProtectedPaths = v
+				}
+			}
+		}
+	}
+
 	if raw, ok := patch["modelRoutes"]; ok {
 		var v map[string]string
 		if json.Unmarshal(raw, &v) == nil && v != nil {
@@ -402,6 +472,9 @@ func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 	sm.config.AutoOpenFile = updates.AutoOpenFile
 	sm.config.AutoOpenDiff = updates.AutoOpenDiff
 	sm.config.AskDestructiveOps = updates.AskDestructiveOps
+	if updates.Guardrails.Mode != "" {
+		sm.config.Guardrails = updates.Guardrails
+	}
 	if updates.ModelRoutes != nil {
 		sm.config.ModelRoutes = updates.ModelRoutes
 	}
@@ -409,6 +482,37 @@ func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 	sm.saveLocked()
 	sm.initActiveProvider()
 	sm.mu.Unlock()
+}
+
+// Policy builds the tools.Policy enforced for the next run from current
+// settings. mode=plan forces read-only regardless of the guardrails mode.
+func (sm *SettingsManager) Policy() tools.Policy {
+	cfg := sm.GetConfig()
+	p := tools.DefaultPolicy()
+
+	g := cfg.Guardrails
+	switch g.Mode {
+	case "readonly", "autonomous", "supervised":
+		p.Mode = tools.PolicyMode(g.Mode)
+	}
+	if cfg.Mode == ModePlan {
+		p.Mode = tools.PolicyReadOnly
+	}
+	p.ShellAllowed = g.ShellAllowed
+	p.ApproveAllShell = g.ApproveAllShell
+	p.RequireApproval = cfg.AskDestructiveOps
+	p.SubagentsAllowed = g.SubagentsAllowed
+	if cfg.MaxSubagents > 0 {
+		p.MaxSubagents = cfg.MaxSubagents
+	}
+	if g.MaxSteps > 0 {
+		p.MaxSteps = g.MaxSteps
+	}
+	// Custom rules extend the built-in floor — deny-lists and protected
+	// paths are additive so a config can't unprotect the defaults.
+	p.CommandsDeny = append(p.CommandsDeny, g.DenyCommands...)
+	p.ProtectedPaths = append(p.ProtectedPaths, g.ProtectedPaths...)
+	return p
 }
 
 // TestProvider performs a real connectivity + credential check via Ping.

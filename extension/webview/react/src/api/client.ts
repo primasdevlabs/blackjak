@@ -75,6 +75,40 @@ export class AgentApiClient {
     return json.data;
   }
 
+  async pauseRun(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/runs/${id}/pause`, { method: 'POST' });
+    const json = await res.json();
+    if (!json.success) {
+      throw new Error(json.error || 'Failed to pause run');
+    }
+  }
+
+  async resumeRun(id: string, prompt?: string): Promise<RunDTO> {
+    const res = await fetch(`${this.baseUrl}/api/runs/${id}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: prompt || '' }),
+    });
+    const json = await res.json();
+    if (!json.success) {
+      throw new Error(json.error || 'Failed to resume run');
+    }
+    return json.data;
+  }
+
+  async reviewFileChange(runId: string, changeId: string, action: 'accept' | 'reject'): Promise<RunDTO> {
+    const res = await fetch(`${this.baseUrl}/api/runs/${runId}/changes/${changeId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const json = await res.json();
+    if (!json.success) {
+      throw new Error(json.error || 'Failed to review change');
+    }
+    return json.data;
+  }
+
   async submitApproval(runId: string, response: ApprovalResponse): Promise<RunDTO> {
     const res = await fetch(`${this.baseUrl}/api/runs/${runId}/approval`, {
       method: 'POST',

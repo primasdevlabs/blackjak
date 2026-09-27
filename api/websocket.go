@@ -128,6 +128,43 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// WriteFrame writes a single RFC 6455 frame with the given opcode.
+func (ws *WebSocketConn) WriteFrame(opcode byte, payload []byte) error {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+
+	w := ws.conn.Writer
+	if err := w.WriteByte(0x80 | opcode); err != nil {
+		return err
+	}
+
+	length := len(payload)
+	if length < 126 {
+		if err := w.WriteByte(byte(length)); err != nil {
+			return err
+		}
+	} else if length <= 65535 {
+		if err := w.WriteByte(126); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(length)); err != nil {
+			return err
+		}
+	} else {
+		if err := w.WriteByte(127); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, uint64(length)); err != nil {
+			return err
+		}
+	}
+
+	if _, err := w.Write(payload); err != nil {
+		return err
+	}
+	return w.Flush()
+}
+
 func (s *Server) processClientMessage(ws *WebSocketConn, msg protocol.ClientMessage) {
 	switch msg.Type {
 	case protocol.ClientMsgPing:
@@ -197,21 +234,54 @@ func (s *Server) processClientMessage(ws *WebSocketConn, msg protocol.ClientMess
 	}
 }
 
-// ReadFrame reads an RFC 6455 unmasked or masked text/binary frame.
+// ReadFrame reads an RFC 6455 frame. Control frames (ping/pong/close) are
+// handled inline — a ping is answered with a pong — and only data frame
+// payloads are returned to the caller. Browsers send transport pings; a
+// server that never pongs gets disconnected.
 func (ws *WebSocketConn) ReadFrame() ([]byte, error) {
 	ws.mu.Lock()
 	r := ws.conn.Reader
 	ws.mu.Unlock()
 
-	b1, err := r.ReadByte()
-	if err != nil {
-		return nil, err
-	}
+	for {
+		b1, err := r.ReadByte()
+		if err != nil {
+			return nil, err
+		}
 
-	opcode := b1 & 0x0F
-	if opcode == 0x8 { // Connection close
-		return nil, io.EOF
+		fin := b1&0x80 != 0
+		opcode := b1 & 0x0F
+
+		payload, err := readFramePayload(r)
+		if err != nil {
+			return nil, err
+		}
+
+		switch opcode {
+		case 0x8: // close
+			return nil, io.EOF
+		case 0x9: // ping → pong
+			_ = ws.WriteFrame(0xA, payload)
+			continue
+		case 0xA: // pong
+			continue
+		case 0x0: // continuation of a fragmented message — unsupported, skip
+			continue
+		}
+
+		if !fin {
+			// First fragment of a multi-frame message — we don't reassemble
+			// fragmented payloads; treat it as a standalone frame.
+			continue
+		}
+
+		if opcode == 0x1 || opcode == 0x2 {
+			return payload, nil
+		}
 	}
+}
+
+func readFramePayload(r *bufio.Reader) ([]byte, error) {
 
 	b2, err := r.ReadByte()
 	if err != nil {
@@ -256,40 +326,5 @@ func (ws *WebSocketConn) ReadFrame() ([]byte, error) {
 
 // WriteTextFrame writes a single RFC 6455 unmasked text frame.
 func (ws *WebSocketConn) WriteTextFrame(payload []byte) error {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	w := ws.conn.Writer
-	length := len(payload)
-
-	// Opcode 0x1 (text frame) | FIN 0x80 = 0x81
-	if err := w.WriteByte(0x81); err != nil {
-		return err
-	}
-
-	if length < 126 {
-		if err := w.WriteByte(byte(length)); err != nil {
-			return err
-		}
-	} else if length <= 65535 {
-		if err := w.WriteByte(126); err != nil {
-			return err
-		}
-		if err := binary.Write(w, binary.BigEndian, uint16(length)); err != nil {
-			return err
-		}
-	} else {
-		if err := w.WriteByte(127); err != nil {
-			return err
-		}
-		if err := binary.Write(w, binary.BigEndian, uint64(length)); err != nil {
-			return err
-		}
-	}
-
-	if _, err := w.Write(payload); err != nil {
-		return err
-	}
-
-	return w.Flush()
+	return ws.WriteFrame(0x1, payload)
 }

@@ -60,6 +60,10 @@ func NewServer(cfg ServerConfig, llmClient llm.Client) *Server {
 	ag := agent.New(broker, ws, llmClient)
 	ag.SetPersistentMemory(memory.NewPersistentMemory(
 		filepath.Join(cfg.Workspace, ".blackjak", "memory.json")))
+	// Guardrails resolve per-run so Settings edits apply immediately.
+	ag.SetPolicyResolver(sm.Policy)
+	// Rehydrate checkpointed runs so paused/stopped work survives restarts.
+	rm.RestoreFromWorkspace(cfg.Workspace)
 	ag.SetClientResolver(func(role string) llm.Client {
 		cfg := sm.GetConfig()
 		var mc llm.ModelConfig

@@ -11,7 +11,8 @@ import (
 
 // TestTool detects and runs the project test suite.
 type TestTool struct {
-	ws *workspace.Workspace
+	ws     *workspace.Workspace
+	policy Policy
 }
 
 func (t *TestTool) Name() string { return "test" }
@@ -46,7 +47,7 @@ func (t *TestTool) Execute(ctx context.Context, args map[string]interface{}) (in
 	}
 	timeout := argInt(args, "timeout_seconds", 180)
 
-	shell := &ShellTool{ws: t.ws}
+	shell := &ShellTool{ws: t.ws, policy: t.policy}
 	res, err := shell.Execute(ctx, map[string]interface{}{
 		"command":         cmd,
 		"timeout_seconds": timeout,

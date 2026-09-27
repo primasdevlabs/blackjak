@@ -17,6 +17,8 @@ export function useAgent(): AgentState & {
   loadRunFromHistory: (runId: string) => void;
   deleteRunFromHistory: (runId: string) => void;
   retryLastRun: () => void;
+  pauseTask: () => void;
+  resumeTask: (prompt?: string) => void;
 } {
   const [state, setState] = useState<AgentState>(agentStore.getState());
 
@@ -44,5 +46,7 @@ export function useAgent(): AgentState & {
     loadRunFromHistory: (runId) => { void agentStore.loadRunFromHistory(runId); },
     deleteRunFromHistory: (runId) => { void agentStore.deleteRunFromHistory(runId); },
     retryLastRun: () => agentStore.retryLastRun(),
+    pauseTask: () => agentStore.pauseTask(),
+    resumeTask: (prompt) => agentStore.resumeTask(prompt),
   };
 }

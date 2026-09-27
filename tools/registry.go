@@ -74,14 +74,17 @@ func (r *Registry) Schemas() []llm.Tool {
 
 // DefaultRegistry builds the standard tool set for a workspace. The approval
 // callback is invoked before destructive shell commands and file deletions.
-func DefaultRegistry(ws *workspace.Workspace, approve ApprovalFunc, mem Store) *Registry {
+// The policy enforces guardrails inside the tools themselves — hard blocks
+// (deny-listed commands, protected paths, read-only mode) cannot be approved
+// away.
+func DefaultRegistry(ws *workspace.Workspace, approve ApprovalFunc, mem Store, policy Policy) *Registry {
 	r := NewRegistry()
-	fs := &FilesystemTool{ws: ws}
+	fs := &FilesystemTool{ws: ws, policy: policy}
 	r.Register(fs)
-	r.Register(&ShellTool{ws: ws, approve: approve})
+	r.Register(&ShellTool{ws: ws, approve: approve, policy: policy})
 	r.Register(&SearchTool{ws: ws})
-	r.Register(&GitTool{ws: ws, approve: approve})
-	r.Register(&TestTool{ws: ws})
+	r.Register(&GitTool{ws: ws, approve: approve, policy: policy})
+	r.Register(&TestTool{ws: ws, policy: policy})
 	if mem != nil {
 		r.Register(&MemoryTool{store: mem})
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,13 @@ import (
 // settings manager so model routing changes take effect per run.
 type ClientResolver func(role string) llm.Client
 
+// PolicyResolver resolves the active guardrail policy. Implemented by the
+// API layer's settings manager so policy changes take effect per run.
+type PolicyResolver func() tools.Policy
+
 const (
-	maxLoopIterations = 60
-	maxSubagentDepth  = 2
-	defaultMaxTokens  = 8192
+	maxSubagentDepth = 2
+	defaultMaxTokens = 8192
 )
 
 // completionResult carries the run's final summary and follow-up suggestions.
@@ -88,16 +92,32 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 		return err
 	}
 
+	policy := a.policy()
 	working := memory.NewWorkingMemory()
-	registry := a.buildRegistry(run, rm, working)
+	registry := a.buildRegistry(run, rm, working, policy)
 	toolSchemas := append(registry.Schemas(), delegateSchema(), taskCompleteSchema())
 
-	systemPrompt := a.buildSystemPrompt(run, working)
-	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: systemPrompt},
-		{Role: llm.RoleUser, Content: run.Prompt},
+	systemPrompt := a.buildSystemPrompt(run, working, policy)
+	messages := run.GetMessages()
+	resumed := len(messages) > 0
+	if !resumed {
+		messages = []llm.Message{
+			{Role: llm.RoleSystem, Content: systemPrompt},
+			{Role: llm.RoleUser, Content: run.Prompt},
+		}
+		run.SetMessages(messages)
+	} else {
+		// Resumed run: refresh the system prompt so current guardrails and
+		// memory apply, keeping the rest of the conversation intact.
+		if messages[0].Role == llm.RoleSystem {
+			messages[0] = llm.Message{Role: llm.RoleSystem, Content: systemPrompt}
+		}
+		run.SetMessages(messages)
+		a.emitEvent(run, "", EventRunResumed, map[string]interface{}{
+			"runId":         run.ID,
+			"messageCount":  len(messages),
+		})
 	}
-	run.SetMessages(messages)
 
 	a.emitEvent(run, "", EventContextUpdated, map[string]interface{}{
 		"workspace":  run.Workspace,
@@ -105,8 +125,16 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 		"toolCount":  len(toolSchemas),
 	})
 
-	completed, err := a.runLoop(runCtx, run, rm, client, registry, toolSchemas, messages, 0)
+	completed, err := a.runLoop(runCtx, run, rm, client, registry, toolSchemas, messages, 0, policy.StepsLimit())
 	if err != nil {
+		if errors.Is(err, errRunPaused) || run.IsPauseRequested() {
+			run.SetStatus(RunPaused)
+			a.emitEvent(run, "", EventRunPaused, map[string]interface{}{
+				"runId":   run.ID,
+				"message": "Run paused — context checkpointed",
+			})
+			return nil
+		}
 		if runCtx.Err() != nil {
 			a.handleCancel(run)
 			return runCtx.Err()
@@ -140,15 +168,44 @@ func countToolEvents(run *Run) int {
 	return n
 }
 
+// checkpointRun persists the main loop's message state. Subagent loops
+// (depth > 0) share the run's message slot but never overwrite its checkpoint.
+func checkpointRun(rm *RunManager, run *Run, depth int, messages []llm.Message) {
+	if depth == 0 && rm != nil {
+		rm.SaveCheckpoint(run, messages)
+	}
+}
+
 // runLoop executes LLM turns until the model stops calling tools or calls
-// task_complete. Returns the final completion result.
+// task_complete. Returns the final completion result. maxSteps is a
+// guardrail — when it's hit the loop terminates rather than running forever.
+// errRunPaused signals that the loop stopped because a pause was requested —
+// distinct from ctx.Err() cancellation so the run ends 'paused', not 'cancelled'.
+var errRunPaused = fmt.Errorf("run paused")
+
 func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 	client llm.Client, registry *tools.Registry, toolSchemas []llm.Tool,
-	messages []llm.Message, depth int) (completionResult, error) {
+	messages []llm.Message, depth int, maxSteps int) (completionResult, error) {
 
-	for i := 0; i < maxLoopIterations; i++ {
+	// Persist the conversation on every exit path — completed, failed,
+	// paused, or cancelled — so resume always has the latest context.
+	// Only the main loop (depth 0) owns the run checkpoint; subagent loops
+	// share the run's message slot but must not overwrite its checkpoint.
+	defer func() {
+		if depth == 0 && rm != nil {
+			rm.SaveCheckpoint(run, messages)
+		}
+	}()
+
+	for i := 0; i < maxSteps; i++ {
 		if ctx.Err() != nil {
+			if run.IsPauseRequested() {
+				return completionResult{}, errRunPaused
+			}
 			return completionResult{}, ctx.Err()
+		}
+		if run.IsPauseRequested() {
+			return completionResult{}, errRunPaused
 		}
 
 		// Service a queued /compact request between iterations.
@@ -157,6 +214,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			messages = a.compactMessages(ctx, run, client, messages)
 			after := estimateMessageTokens(messages)
 			run.SetMessages(messages)
+			checkpointRun(rm, run, depth, messages)
 			a.emitEvent(run, "", EventContextUpdated, map[string]interface{}{
 				"compacted":    true,
 				"tokensBefore": before,
@@ -184,6 +242,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			})
 			messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
 			run.SetMessages(messages)
+			checkpointRun(rm, run, depth, messages)
 		}
 
 		if len(resp.ToolCalls) == 0 {
@@ -201,9 +260,13 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			ToolCalls: resp.ToolCalls,
 		})
 		run.SetMessages(messages)
+		checkpointRun(rm, run, depth, messages)
 
 		for _, call := range resp.ToolCalls {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || run.IsPauseRequested() {
+				if run.IsPauseRequested() {
+					return completionResult{}, errRunPaused
+				}
 				return completionResult{}, ctx.Err()
 			}
 
@@ -244,6 +307,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 				Content:    toolOutcome(result, err),
 			})
 			run.SetMessages(messages)
+			checkpointRun(rm, run, depth, messages)
 
 			if done != nil {
 				return *done, nil
@@ -251,7 +315,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 		}
 	}
 
-	return completionResult{Summary: "Reached maximum execution steps"}, nil
+	return completionResult{Summary: fmt.Sprintf("Reached the configured step limit (%d)", maxSteps)}, nil
 }
 
 // executeToolCall dispatches one tool call. Returns (result, done, err).
@@ -326,6 +390,9 @@ func (a *Agent) executeDelegate(ctx context.Context, run *Run, rm *RunManager,
 	if depth >= maxSubagentDepth {
 		return nil, fmt.Errorf("max subagent depth reached")
 	}
+	if err := a.policy().CheckDelegate(len(run.Subagents)); err != nil {
+		return nil, err
+	}
 
 	role := argStr(args, "role")
 	task := argStr(args, "task")
@@ -358,18 +425,18 @@ func (a *Agent) executeDelegate(ctx context.Context, run *Run, rm *RunManager,
 		s.SetActivity(fmt.Sprintf("Working on: %s", task))
 
 		subWorking := memory.NewWorkingMemory()
-		subRegistry := a.buildRegistry(run, rm, subWorking)
+		subRegistry := a.buildRegistry(run, rm, subWorking, a.policy())
 		subTools := append(subRegistry.Schemas(), planSchema(), taskCompleteSchema())
 
 		subPrompt := fmt.Sprintf("%s\n\nYou are a %s subagent. Complete this task and report results:\n\n%s",
-			a.buildSystemPrompt(run, subWorking), role, task)
+			a.buildSystemPrompt(run, subWorking, a.policy()), role, task)
 
 		subMessages := []llm.Message{
 			{Role: llm.RoleSystem, Content: subPrompt},
 			{Role: llm.RoleUser, Content: task},
 		}
 
-		result, err := a.runLoop(subCtx, run, rm, client, subRegistry, subTools, subMessages, depth+1)
+		result, err := a.runLoop(subCtx, run, rm, client, subRegistry, subTools, subMessages, depth+1, a.policy().StepsLimit())
 		if err != nil {
 			return err
 		}
@@ -409,16 +476,29 @@ func (a *Agent) trackToolSideEffects(run *Run, rm *RunManager, toolName string,
 			return
 		}
 		abs := filepath.Join(run.Workspace, path)
+		existed, _ := m["existed"].(bool)
+		prevContent, _ := m["previousContent"].(string)
+		snapshotLost, _ := m["snapshotLost"].(bool)
 		switch op {
 		case "write":
 			changeType := workspace.ChangeCreated
-			// If the file already existed it's a modification — detect via exists flag
+			if existed {
+				changeType = workspace.ChangeModified
+			}
 			fc := rm.GetTracker().TrackChange(run.ID, "", changeType, abs, "", "")
+			fc.PreviousContent = prevContent
+			fc.CanRevert = !snapshotLost
 			run.AddFileChange(fc)
-			a.emitEvent(run, "", EventFileCreated, fc)
-			a.emitEvent(run, "", EventWorkspaceOpenFile, map[string]interface{}{"path": abs})
+			if changeType == workspace.ChangeCreated {
+				a.emitEvent(run, "", EventFileCreated, fc)
+				a.emitEvent(run, "", EventWorkspaceOpenFile, map[string]interface{}{"path": abs})
+			} else {
+				a.emitEvent(run, "", EventFileModified, fc)
+			}
 		case "edit":
 			fc := rm.GetTracker().TrackChange(run.ID, "", workspace.ChangeModified, abs, "", "")
+			fc.PreviousContent = prevContent
+			fc.CanRevert = !snapshotLost
 			run.AddFileChange(fc)
 			a.emitEvent(run, "", EventFileModified, fc)
 		case "read":
@@ -439,8 +519,9 @@ func (a *Agent) trackToolSideEffects(run *Run, rm *RunManager, toolName string,
 	}
 }
 
-// buildRegistry creates a per-run tool registry with approval gating.
-func (a *Agent) buildRegistry(run *Run, rm *RunManager, working *memory.WorkingMemory) *tools.Registry {
+// buildRegistry creates a per-run tool registry with approval gating and
+// guardrail enforcement baked into the tools.
+func (a *Agent) buildRegistry(run *Run, rm *RunManager, working *memory.WorkingMemory, policy tools.Policy) *tools.Registry {
 	var approve tools.ApprovalFunc
 	if rm != nil {
 		approve = approvalGate(rm, run)
@@ -449,7 +530,7 @@ func (a *Agent) buildRegistry(run *Run, rm *RunManager, working *memory.WorkingM
 	if a.persistent != nil {
 		store = a.persistent
 	}
-	return tools.DefaultRegistry(workspace.New(run.Workspace), approve, store)
+	return tools.DefaultRegistry(workspace.New(run.Workspace), approve, store, policy)
 }
 
 // resolveClient returns the client for a role, falling back to coding.
@@ -464,10 +545,28 @@ func (a *Agent) resolveClient(role string) llm.Client {
 	return client
 }
 
-// buildSystemPrompt assembles the full system prompt including persistent memory.
-func (a *Agent) buildSystemPrompt(run *Run, working *memory.WorkingMemory) string {
+// buildSystemPrompt assembles the full system prompt including persistent
+// memory and the active guardrail contract, so the model knows its limits
+// before it tries a call that will be rejected.
+func (a *Agent) buildSystemPrompt(run *Run, working *memory.WorkingMemory, policy tools.Policy) string {
 	var b strings.Builder
 	b.WriteString(a.context.AssembleSystemPrompt(run.Workspace))
+
+	b.WriteString("\n\nGuardrails currently in effect:\n")
+	switch policy.Mode {
+	case tools.PolicyReadOnly:
+		b.WriteString("- READ-ONLY mode: file writes/edits and non-readonly shell commands will be rejected. Inspect and plan only — do not attempt modifications.\n")
+	case tools.PolicyAutonomous:
+		b.WriteString("- Autonomous mode: no approval prompts, but deny-listed commands and protected paths are still hard-blocked.\n")
+	default:
+		b.WriteString("- Supervised mode: destructive commands and git commits require user approval.\n")
+	}
+	if !policy.ShellAllowed {
+		b.WriteString("- Shell commands are disabled entirely.\n")
+	}
+	if !policy.SubagentsAllowed {
+		b.WriteString("- Subagent delegation is disabled.\n")
+	}
 
 	if a.persistent != nil {
 		entries := a.persistent.Entries()

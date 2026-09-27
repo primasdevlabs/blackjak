@@ -12,6 +12,7 @@ import (
 type GitTool struct {
 	ws      *workspace.Workspace
 	approve ApprovalFunc
+	policy  Policy
 }
 
 func (g *GitTool) Name() string { return "git" }
@@ -42,6 +43,14 @@ func (g *GitTool) Execute(ctx context.Context, args map[string]interface{}) (int
 	op := argString(args, "operation")
 	extra := argString(args, "args")
 
+	if err := g.policy.CheckGitOp(op); err != nil {
+		return nil, err
+	}
+	// `branch` with args creates/mutates — read-only allows bare listing only.
+	if g.policy.Mode == PolicyReadOnly && op == "branch" && extra != "" {
+		return nil, fmt.Errorf("read-only mode: git branch with arguments is not permitted")
+	}
+
 	var gitArgs []string
 	switch op {
 	case "status":
@@ -71,7 +80,10 @@ func (g *GitTool) Execute(ctx context.Context, args map[string]interface{}) (int
 			return nil, fmt.Errorf("commit requires args (e.g. -m \"message\")")
 		}
 		gitArgs = append([]string{"commit"}, strings.Fields(extra)...)
-		if g.approve != nil {
+		if g.policy.GitNeedsApproval(op) {
+			if g.approve == nil {
+				return nil, fmt.Errorf("git commit requires approval but no approver is configured")
+			}
 			ok, err := g.approve(ctx, "git_commit", fmt.Sprintf("git commit %s", extra))
 			if err != nil {
 				return nil, err
@@ -86,7 +98,7 @@ func (g *GitTool) Execute(ctx context.Context, args map[string]interface{}) (int
 		return nil, fmt.Errorf("unsupported git operation: %s", op)
 	}
 
-	shell := &ShellTool{ws: g.ws}
+	shell := &ShellTool{ws: g.ws, approve: g.approve, policy: g.policy}
 	return shell.Execute(ctx, map[string]interface{}{
 		"command":         "git " + strings.Join(gitArgs, " "),
 		"timeout_seconds": 30,

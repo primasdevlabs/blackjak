@@ -6,6 +6,7 @@ import (
 
 	"blackjak/llm"
 	"blackjak/memory"
+	"blackjak/tools"
 	"blackjak/workspace"
 )
 
@@ -17,6 +18,7 @@ type Agent struct {
 	context    *ContextAssembler
 	llm        llm.Client
 	resolver   ClientResolver
+	policyFn   PolicyResolver
 	persistent *memory.PersistentMemory
 }
 
@@ -35,6 +37,20 @@ func New(broker *EventBroker, ws *workspace.Workspace, llmClient llm.Client) *Ag
 // SetClientResolver installs a per-role LLM client resolver.
 func (a *Agent) SetClientResolver(r ClientResolver) {
 	a.resolver = r
+}
+
+// SetPolicyResolver installs a resolver for the runtime guardrail policy.
+// Called per run so settings changes take effect without restarting.
+func (a *Agent) SetPolicyResolver(r PolicyResolver) {
+	a.policyFn = r
+}
+
+// policy returns the active guardrails, defaulting to supervised.
+func (a *Agent) policy() tools.Policy {
+	if a.policyFn != nil {
+		return a.policyFn()
+	}
+	return tools.DefaultPolicy()
 }
 
 // SetPersistentMemory installs the durable memory store.

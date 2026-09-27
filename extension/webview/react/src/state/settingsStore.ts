@@ -28,6 +28,15 @@ class SettingsStore {
     autoOpenFile: true,
     autoOpenDiff: true,
     askDestructiveOps: true,
+    guardrails: {
+      mode: 'supervised',
+      shellAllowed: true,
+      approveAllShell: false,
+      denyCommands: [],
+      protectedPaths: [],
+      subagentsAllowed: true,
+      maxSteps: 60,
+    },
     modelRoutes: {
       planning: 'thinking',
       exploration: 'fast',

@@ -17,6 +17,15 @@ const (
 	ChangeMoved    ChangeType = "moved"
 )
 
+// ReviewStatus describes the human review state of a tracked file change.
+type ReviewStatus string
+
+const (
+	ReviewPending  ReviewStatus = "pending"
+	ReviewAccepted ReviewStatus = "accepted"
+	ReviewRejected ReviewStatus = "rejected"
+)
+
 // FileChange tracks modifications made to a file by a specific agent run.
 type FileChange struct {
 	ID           string     `json:"id"`
@@ -26,6 +35,11 @@ type FileChange struct {
 	Path         string     `json:"path"`
 	PreviousPath string     `json:"previousPath,omitempty"`
 	Diff         string     `json:"diff,omitempty"`
+	Status       ReviewStatus `json:"status"`
+	CanRevert    bool       `json:"canRevert"`
+	// PreviousContent is the pre-change snapshot used to revert on decline.
+	// It is never serialized — snapshots stay server-side.
+	PreviousContent string `json:"-"`
 	Timestamp    time.Time  `json:"timestamp"`
 }
 
@@ -68,11 +82,27 @@ func (tm *FileTrackerManager) TrackChange(runID, agentID string, cType ChangeTyp
 		Path:         path,
 		PreviousPath: prevPath,
 		Diff:         diff,
+		Status:       ReviewPending,
+		CanRevert:    true,
 		Timestamp:    time.Now(),
 	}
 
 	tm.changes[runID] = append(tm.changes[runID], fc)
 	return fc
+}
+
+// SetStatus updates the review status of a tracked change.
+func (tm *FileTrackerManager) SetStatus(runID, changeID string, status ReviewStatus) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	list := tm.changes[runID]
+	for i := range list {
+		if list[i].ID == changeID {
+			list[i].Status = status
+			tm.changes[runID] = list
+			return
+		}
+	}
 }
 
 // GetChanges returns all tracked file changes for a given runID.

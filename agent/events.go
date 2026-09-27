@@ -16,6 +16,8 @@ const (
 	EventRunCompleted EventType = "run.completed"
 	EventRunFailed    EventType = "run.failed"
 	EventRunCancelled EventType = "run.cancelled"
+	EventRunPaused    EventType = "run.paused"
+	EventRunResumed   EventType = "run.resumed"
 
 	// Subagent lifecycle & orchestration events
 	EventAgentCreated   EventType = "agent.created"
@@ -46,6 +48,7 @@ const (
 	EventFileDeleted  EventType = "file.deleted"
 	EventFileRenamed  EventType = "file.renamed"
 	EventFileMoved    EventType = "file.moved"
+	EventFileChangeReviewed EventType = "file.change.reviewed"
 
 	// Workspace intelligence & lease events
 	EventWorkspaceReference  EventType = "workspace.reference"

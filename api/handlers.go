@@ -9,6 +9,7 @@ import (
 
 	"blackjak/agent"
 	"blackjak/protocol"
+	"blackjak/workspace"
 )
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -324,6 +325,42 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 			Data:    toRun(run),
 		})
 
+	case "pause":
+		// POST /api/runs/:id/pause — graceful stop with context checkpointed.
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		success := s.runManager.PauseRun(runID)
+		writeJSON(w, http.StatusOK, protocol.APIResponse{
+			Success: success,
+			Data:    toRun(run),
+		})
+
+	case "resume":
+		// POST /api/runs/:id/resume — continue from the checkpointed context.
+		// Body may carry {"prompt": "..."} to redirect the run on resume.
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var payload struct {
+			Prompt string `json:"prompt"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		resumedRun, err := s.runManager.ResumeRun(runID, payload.Prompt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		go func() {
+			_ = s.agent.ExecuteRun(resumedRun.Context(), resumedRun, s.runManager)
+		}()
+		writeJSON(w, http.StatusOK, protocol.APIResponse{
+			Success: true,
+			Data:    toRun(resumedRun),
+		})
+
 	case "approval":
 		// POST /api/runs/:id/approval
 		if r.Method != http.MethodPost {
@@ -349,9 +386,55 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 			Data:    toRun(run),
 		})
 
+	case "changes":
+		// POST /api/runs/:id/changes/:changeId — review a file change.
+		// changeId "all" applies the action to every pending change.
+		if r.Method != http.MethodPost || len(parts) < 3 || parts[2] == "" {
+			writeError(w, http.StatusNotFound, "Subroute not found")
+			return
+		}
+		var payload struct {
+			Action string `json:"action"` // "accept" | "reject"
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON body")
+			return
+		}
+		changeID := parts[2]
+		if changeID == "all" {
+			ids := pendingChangeIDs(run)
+			if len(ids) == 0 {
+				writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: toRun(run)})
+				return
+			}
+			for _, id := range ids {
+				if _, err := s.runManager.ReviewFileChange(runID, id, payload.Action); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+			writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: toRun(run)})
+			return
+		}
+		if _, err := s.runManager.ReviewFileChange(runID, changeID, payload.Action); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.APIResponse{Success: true, Data: toRun(run)})
+
 	default:
 		writeError(w, http.StatusNotFound, "Subroute not found")
 	}
+}
+
+func pendingChangeIDs(run *agent.Run) []string {
+	var ids []string
+	for _, fc := range run.FileChanges {
+		if fc.Status == "" || fc.Status == workspace.ReviewPending {
+			ids = append(ids, fc.ID)
+		}
+	}
+	return ids
 }
 
 // GET /api/events (SSE Stream)

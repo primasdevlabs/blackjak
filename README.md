@@ -158,6 +158,8 @@ Typing `/` in the composer opens an inline autocomplete menu supporting keyboard
    make ui
    ```
 
+> **Full install/execution guide** — VSIX packaging, per-IDE install commands (including Antigravity's `--extensions-dir` quirk), standalone/CLI modes, provider setup, and troubleshooting: [INSTALLATION.md](INSTALLATION.md)
+
 ---
 
 ## 🌐 Wire Protocol & API Endpoints

@@ -6,7 +6,8 @@ export type RunStatus =
   | 'waiting'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'paused';
 
 export type SubagentStatus =
   | 'created'
@@ -23,6 +24,8 @@ export type EventType =
   | 'run.completed'
   | 'run.failed'
   | 'run.cancelled'
+  | 'run.paused'
+  | 'run.resumed'
   | 'agent.created'
   | 'agent.started'
   | 'agent.waiting'
@@ -45,6 +48,7 @@ export type EventType =
   | 'file.deleted'
   | 'file.renamed'
   | 'file.moved'
+  | 'file.change.reviewed'
   | 'workspace.reference'
   | 'workspace.attachment'
   | 'workspace.conflict'
@@ -110,6 +114,8 @@ export interface FileChange {
   path: string;
   previousPath?: string;
   diff?: string;
+  status?: 'pending' | 'accepted' | 'rejected';
+  canRevert?: boolean;
   timestamp: string;
 }
 

@@ -17,6 +17,16 @@ export interface ProviderCredentials {
   storageMode: 'environment' | 'stored' | 'session';
 }
 
+export interface GuardrailsConfig {
+  mode: 'supervised' | 'readonly' | 'autonomous';
+  shellAllowed: boolean;
+  approveAllShell: boolean;
+  denyCommands: string[];
+  protectedPaths: string[];
+  subagentsAllowed: boolean;
+  maxSteps: number;
+}
+
 export interface SettingsConfig {
   activeProvider: string;
   providers: Record<string, ProviderCredentials>;
@@ -38,6 +48,7 @@ export interface SettingsConfig {
   autoOpenDiff: boolean;
   askDestructiveOps: boolean;
   modelRoutes: Record<string, string>;
+  guardrails: GuardrailsConfig;
 }
 
 export interface Model {

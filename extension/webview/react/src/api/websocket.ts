@@ -14,7 +14,6 @@ export class AgentWebSocketClient {
   private reconnectTimer: any = null;
   private pingInterval: any = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
 
   constructor(url: string = 'ws://127.0.0.1:47811/ws') {
     this.url = url;
@@ -144,11 +143,10 @@ export class AgentWebSocketClient {
   }
 
   private scheduleReconnect() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      return;
-    }
+    // No attempt cap — the backend may restart at any time (extension
+    // restart, port change), so the client must keep trying.
     this.reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 10000);
+    const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 15000);
     this.reconnectTimer = setTimeout(() => {
       this.connect();
     }, delay);

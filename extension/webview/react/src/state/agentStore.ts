@@ -180,7 +180,7 @@ class AgentStore {
       const runs = await apiClient.listRuns();
       this.setState({ runs });
       const live = runs
-        .filter((r) => r.status === 'running' || r.status === 'waiting' || r.status === 'pending')
+        .filter((r) => r.status === 'running' || r.status === 'waiting' || r.status === 'pending' || r.status === 'paused')
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
       if (!live) return;
 
@@ -468,6 +468,34 @@ class AgentStore {
     }
   }
 
+  /** Gracefully pause the running task — context stays checkpointed. */
+  pauseTask() {
+    const sess = this.activeSession();
+    if (!sess?.runId) return;
+    apiClient.pauseRun(sess.runId).catch(() => {});
+  }
+
+  /** Resume a paused/cancelled/failed run, optionally steering it with a
+   *  new instruction appended to the checkpointed conversation. */
+  resumeTask(prompt?: string) {
+    const sess = this.activeSession();
+    if (!sess?.runId) return;
+    if (prompt) {
+      sess.messages = [
+        ...sess.messages,
+        { id: `msg_${Date.now()}`, sender: 'user', text: prompt, timestamp: new Date().toISOString() },
+      ];
+    }
+    sess.runStatus = 'running';
+    sess.pendingApproval = null;
+    this.publish();
+    apiClient.resumeRun(sess.runId, prompt).catch((err) => {
+      sess.runStatus = 'failed';
+      this.publish();
+      console.error('resume failed:', err);
+    });
+  }
+
   respondApproval(granted: boolean, reason?: string) {
     const sess = this.activeSession();
     if (sess?.runId && sess.pendingApproval) {
@@ -475,6 +503,43 @@ class AgentStore {
       sess.pendingApproval = null;
       this.publish();
     }
+  }
+
+  /** Approve (keep) or decline (revert) a single pending file change. */
+  reviewFileChange(changeId: string, action: 'accept' | 'reject') {
+    const sess = this.activeSession();
+    if (!sess?.runId) return;
+    // Optimistic update — the file.change.reviewed broadcast confirms it.
+    sess.fileChanges = sess.fileChanges.map((c) =>
+      c.id === changeId ? { ...c, status: action === 'accept' ? 'accepted' : 'rejected' } : c
+    );
+    this.publish();
+    apiClient.reviewFileChange(sess.runId, changeId, action).catch(() => {
+      // Revert the optimistic flip on failure.
+      sess.fileChanges = sess.fileChanges.map((c) =>
+        c.id === changeId ? { ...c, status: 'pending' } : c
+      );
+      this.publish();
+    });
+  }
+
+  /** Apply an action to every pending change in the active session. */
+  reviewAllFileChanges(action: 'accept' | 'reject') {
+    const sess = this.activeSession();
+    if (!sess?.runId) return;
+    const pending = sess.fileChanges.filter((c) => !c.status || c.status === 'pending');
+    if (pending.length === 0) return;
+    const status = action === 'accept' ? 'accepted' : 'rejected';
+    sess.fileChanges = sess.fileChanges.map((c) =>
+      pending.some((p) => p.id === c.id) ? { ...c, status } : c
+    );
+    this.publish();
+    apiClient.reviewFileChange(sess.runId, 'all', action).catch(() => {
+      pending.forEach((p) => {
+        sess.fileChanges = sess.fileChanges.map((c) => (c.id === p.id ? { ...c, status: 'pending' } : c));
+      });
+      this.publish();
+    });
   }
 
   private handleServerMessage(msg: ServerMessage) {
@@ -537,6 +602,15 @@ class AgentStore {
             },
           ];
         }
+        break;
+
+      case 'run.paused':
+        sess.runStatus = 'paused';
+        sess.pendingApproval = null;
+        break;
+
+      case 'run.resumed':
+        sess.runStatus = 'running';
         break;
 
       case 'run.cancelled':
@@ -669,6 +743,8 @@ class AgentStore {
               path: data.path,
               type,
               diff: data.diff,
+              status: data.status || 'pending',
+              canRevert: data.canRevert !== false,
               timestamp: now,
             },
           ];
@@ -677,6 +753,14 @@ class AgentStore {
           if (msg.type === 'file.created' && !this.replaying) {
             agentHost.openFile(data.path);
           }
+        }
+        break;
+
+      case 'file.change.reviewed':
+        if (data?.changeId) {
+          sess.fileChanges = sess.fileChanges.map((c) =>
+            c.id === data.changeId ? { ...c, status: data.status } : c
+          );
         }
         break;
 

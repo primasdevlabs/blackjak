@@ -1,4 +1,4 @@
-import { ActivityCategory, ActivityConfig, ActivityState, ActivityStatus } from './activityTypes';
+import { ActivityCategory, ActivityConfig, ActivityPhase, ActivityState, ActivityStatus } from './activityTypes';
 import { ACTIVITY_MESSAGES } from './messages';
 import { ServerMessage } from '../types/events';
 
@@ -13,6 +13,9 @@ export class ActivityManager {
   private lastMessage: string = '';
   private timer: any = null;
   private listeners: Set<Listener> = new Set();
+  private workingSince?: number;
+  private categorySince?: number;
+  private phases: ActivityPhase[] = [];
 
   constructor(config?: Partial<ActivityConfig>) {
     this.config = {
@@ -38,8 +41,30 @@ export class ActivityManager {
       category: this.category,
       ambientMessage: this.ambientMessage,
       concreteMessage: this.concreteMessage,
+      workingSince: this.workingSince,
+      categorySince: this.categorySince,
+      phases: [...this.phases],
       lastUpdated: new Date(),
     };
+  }
+
+  /** Switch the active category, recording how long the previous one ran. */
+  private setCategory(cat: ActivityCategory) {
+    if (cat === this.category || this.state !== 'working') {
+      if (cat === this.category) return;
+      this.category = cat;
+      this.categorySince = Date.now();
+      return;
+    }
+    if (this.categorySince) {
+      const durationMs = Date.now() - this.categorySince;
+      if (durationMs > 500) {
+        this.phases.push({ category: this.category, message: this.ambientMessage, durationMs });
+        if (this.phases.length > 8) this.phases = this.phases.slice(-8);
+      }
+    }
+    this.category = cat;
+    this.categorySince = Date.now();
   }
 
   public subscribe(listener: Listener): () => void {
@@ -60,6 +85,9 @@ export class ActivityManager {
     this.ambientMessage = '';
     this.concreteMessage = undefined;
     this.lastMessage = '';
+    this.workingSince = undefined;
+    this.categorySince = undefined;
+    this.phases = [];
     this.notify();
   }
 
@@ -70,11 +98,22 @@ export class ActivityManager {
 
     switch (msg.type) {
       case 'run.started':
+      case 'run.resumed':
         this.state = 'working';
+        this.workingSince = Date.now();
+        this.phases = [];
         this.category = 'orchestrating';
-        this.concreteMessage = 'Task started';
+        this.categorySince = Date.now();
+        this.concreteMessage = msg.type === 'run.resumed' ? 'Resumed from checkpoint' : 'Task started';
         this.rotateAmbientMessage();
         this.scheduleNextRotation();
+        break;
+
+      case 'run.paused':
+        this.state = 'idle';
+        this.concreteMessage = 'Paused — context checkpointed';
+        this.clearTimer();
+        this.notify();
         break;
 
       case 'run.completed':
@@ -115,14 +154,14 @@ export class ActivityManager {
 
       case 'agent.thinking':
         this.state = 'working';
-        this.category = 'thinking';
+        this.setCategory('thinking');
         this.concreteMessage = data?.thought ? `Thinking: ${data.thought}` : 'Thinking…';
         this.notify();
         break;
 
       case 'agent.plan':
         this.state = 'working';
-        this.category = 'orchestrating';
+        this.setCategory('orchestrating');
         this.concreteMessage = 'Generating step plan';
         this.notify();
         break;
@@ -131,18 +170,18 @@ export class ActivityManager {
         this.state = 'working';
         this.concreteMessage = describeToolCall(data?.tool || '', data?.args);
         if (data?.tool === 'search' || (data?.tool === 'filesystem' && ['read', 'list', 'exists'].includes(data?.args?.operation))) {
-          this.category = 'exploring';
+          this.setCategory('exploring');
         } else if (data?.tool === 'test') {
-          this.category = 'testing';
+          this.setCategory('testing');
         } else if (data?.tool === 'filesystem' || data?.tool === 'shell' || data?.tool === 'git') {
-          this.category = 'editing';
+          this.setCategory('editing');
         }
         this.notify();
         break;
 
       case 'file.read':
         this.state = 'working';
-        this.category = 'exploring';
+        this.setCategory('exploring');
         if (data?.path) {
           const name = data.path.split(/[/\\]/).pop();
           this.concreteMessage = `Reading ${name}`;
@@ -153,7 +192,7 @@ export class ActivityManager {
       case 'file.modified':
       case 'file.created':
         this.state = 'working';
-        this.category = 'editing';
+        this.setCategory('editing');
         if (data?.path) {
           const name = data.path.split(/[/\\]/).pop();
           this.concreteMessage = `Editing ${name}`;
@@ -163,21 +202,21 @@ export class ActivityManager {
 
       case 'test.started':
         this.state = 'working';
-        this.category = 'testing';
+        this.setCategory('testing');
         this.concreteMessage = 'Running test suites';
         this.notify();
         break;
 
       case 'test.failed':
         this.state = 'working';
-        this.category = 'debugging';
+        this.setCategory('debugging');
         this.concreteMessage = 'Test failure detected';
         this.notify();
         break;
 
       case 'test.passed':
         this.state = 'working';
-        this.category = 'finishing';
+        this.setCategory('finishing');
         this.concreteMessage = 'Test passed cleanly';
         this.notify();
         break;

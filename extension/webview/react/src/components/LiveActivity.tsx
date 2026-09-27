@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ToolExecution } from '../state/agentStore';
 import { RunStatus } from '../types/events';
+import { activityManager } from '../activity/activityManager';
+import { ActivityStatus, formatElapsed, phaseLabel } from '../activity/activityTypes';
 import {
   ArrowPathIcon,
   CheckCircleIcon,
@@ -20,8 +22,20 @@ interface LiveActivityProps {
 export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, filesRead, thought }) => {
   const [expanded, setExpanded] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
+  const [activity, setActivity] = useState<ActivityStatus>(() => activityManager.getStatus());
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => activityManager.subscribe(setActivity), []);
 
   const isLive = status === 'running' || status === 'waiting' || status === 'pending';
+
+  // Tick once per second while live so the elapsed-time label stays current.
+  useEffect(() => {
+    if (!isLive) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isLive]);
+
   const hasActivity = tools.length > 0 || filesRead.length > 0;
   if (!isLive && !hasActivity) return null;
 
@@ -30,6 +44,9 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
   const failed = tools.filter((t) => t.status === 'failed');
   const current = running[running.length - 1];
   const recentDone = done.slice(-4);
+  const concrete = current?.step || activity.concreteMessage;
+  const phaseElapsed = activity.categorySince ? now - activity.categorySince : 0;
+  const totalElapsed = activity.workingSince ? now - activity.workingSince : 0;
 
   return (
     <div className="live-activity">
@@ -46,15 +63,26 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
           {status === 'waiting'
             ? 'Waiting for approval'
             : isLive
-              ? current?.step || 'Thinking…'
+              ? concrete || activity.ambientMessage || 'Thinking…'
               : `${done.length} steps · ${filesRead.length} files scanned`}
         </span>
+        {isLive && totalElapsed > 0 && (
+          <span className="live-activity-elapsed">{formatElapsed(totalElapsed)}</span>
+        )}
         {hasActivity && (
           expanded
             ? <ChevronDownIcon className="icon-sm live-activity-chevron" />
             : <ChevronRightIcon className="icon-sm live-activity-chevron" />
         )}
       </div>
+
+      {/* Rotating ambient status — only when a concrete action is already shown above */}
+      {isLive && activity.ambientMessage && concrete && activity.ambientMessage !== concrete && (
+        <div className="live-activity-ambient">
+          {activity.ambientMessage}
+          {phaseElapsed > 1000 && ` · ${formatElapsed(phaseElapsed)}`}
+        </div>
+      )}
 
       {/* Thought preview */}
       {isLive && thought && (
@@ -64,6 +92,15 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
       {/* Expanded detail */}
       {expanded && (
         <div className="live-activity-detail">
+          {activity.phases.length > 0 && (
+            <div className="live-activity-phases">
+              {activity.phases.map((p, i) => (
+                <span key={i} className="live-activity-phase">
+                  {phaseLabel(p.category, p.message)} · {formatElapsed(p.durationMs)}
+                </span>
+              ))}
+            </div>
+          )}
           {recentDone.map((t) => (
             <div key={t.id} className="live-activity-row">
               <CheckCircleIcon className="icon-sm live-activity-icon-done" />

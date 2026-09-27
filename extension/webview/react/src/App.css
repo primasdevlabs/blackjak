@@ -987,6 +987,20 @@ body {
   width: 90px;
 }
 
+.textarea-input {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+  min-height: 60px;
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
 /* Settings feedback toast */
 .settings-feedback-banner {
   margin: 0 16px;
@@ -1655,10 +1669,16 @@ body {
 
 .change-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
   flex-shrink: 0;
   opacity: 0;
   transition: opacity 120ms ease;
+}
+
+/* Rows with a pending review decision keep their controls visible. */
+.change-file-entry .change-actions {
+  opacity: 1;
 }
 
 .change-file-row:hover .change-actions {
@@ -1666,6 +1686,9 @@ body {
 }
 
 .change-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-muted);
@@ -1680,6 +1703,62 @@ body {
   background-color: var(--bg-hover);
   color: var(--text-primary);
   border-color: var(--border-strong);
+}
+
+.change-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.change-btn-accept:hover {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.5);
+}
+
+.change-btn-decline:hover {
+  color: var(--error);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.change-tracker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.change-pending-count {
+  margin-left: 8px;
+  color: #fbbf24;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.change-bulk-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.change-status {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.change-status.accepted {
+  color: #4ade80;
+  background-color: rgba(74, 222, 128, 0.08);
+}
+
+.change-status.rejected {
+  color: var(--text-muted);
+  background-color: var(--bg-surface);
+}
+
+.change-file-entry.change-rejected .change-file-path {
+  opacity: 0.55;
+  text-decoration: line-through;
 }
 
 /* ──────────────────────────────────────────────
@@ -2245,6 +2324,39 @@ body {
 
 .live-activity-icon-error {
   color: var(--error);
+}
+
+.live-activity-elapsed {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.live-activity-phases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 12px 8px 32px;
+}
+
+.live-activity-phase {
+  font-size: 10px;
+  color: var(--text-muted);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-activity-ambient {
+  padding: 0 12px 6px 32px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .live-activity-thought {

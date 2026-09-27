@@ -16,7 +16,9 @@ export async function activate(context: vscode.ExtensionContext) {
   const provider = new AgentWebviewProvider(context, agentManager);
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('agent.sidebar', provider),
+    vscode.window.registerWebviewViewProvider('agent.sidebar', provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
     {
       dispose: () => {
         agentManager?.dispose();

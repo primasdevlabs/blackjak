@@ -14,7 +14,7 @@ export class AgentWebviewProvider implements vscode.WebviewViewProvider {
     this.agentManager = agentManager;
   }
 
-  public resolveWebviewView(
+  public async resolveWebviewView(
     webviewView: vscode.WebviewView,
     context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
@@ -29,6 +29,14 @@ export class AgentWebviewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [extensionUri, vscode.Uri.file(webviewDistPath)],
     };
 
+    // Give the backend a moment to allocate a port so the injected
+    // __AGENT_PORT__ is correct; the live endpoint push below covers
+    // the case where it isn't ready within the grace period.
+    await Promise.race([
+      this.agentManager.waitUntilReady(),
+      new Promise((r) => setTimeout(r, 5000)),
+    ]);
+
     webviewView.webview.html = this.getHtmlForWebview(webviewView.webview);
 
     // Forward webview messages to the host-backed bridge
@@ -42,8 +50,26 @@ export class AgentWebviewProvider implements vscode.WebviewViewProvider {
       webviewView.webview.postMessage(evt);
     });
 
+    // Push the authoritative endpoint whenever the connection reaches
+    // 'ready' — covers webview resolving before the backend finished
+    // starting, and backend restarts that allocate a different port.
+    const pushEndpoint = () => {
+      const port = connection.getPort();
+      if (port > 0) {
+        webviewView.webview.postMessage({
+          type: 'agent.endpoint',
+          data: { host: '127.0.0.1', port },
+        });
+      }
+    };
+    const stateSub = connection.onStateChange((state) => {
+      if (state === 'ready') pushEndpoint();
+    });
+    if (connection.getState() === 'ready') pushEndpoint();
+
     webviewView.onDidDispose(() => {
       eventSub.dispose();
+      stateSub.dispose();
     });
   }
 

@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +23,7 @@ const (
 	RunCompleted RunStatus = "completed"
 	RunFailed    RunStatus = "failed"
 	RunCancelled RunStatus = "cancelled"
+	RunPaused    RunStatus = "paused"
 )
 
 // ApprovalRequest represents a request for human intervention.
@@ -58,9 +62,38 @@ type Run struct {
 	approvalCh   chan ApprovalResponse          `json:"-"`
 	compactCh    chan struct{}                  `json:"-"`
 	messages     []llm.Message                  `json:"-"`
+	pauseRequested bool                         `json:"-"`
 	ctx          context.Context                `json:"-"`
 	cancel       context.CancelFunc             `json:"-"`
 	mu           sync.RWMutex                   `json:"-"`
+}
+
+// RequestPause marks the run for a graceful pause: the loop stops at the
+// next boundary and the context is cancelled to abort an in-flight call.
+func (r *Run) RequestPause() {
+	r.mu.Lock()
+	r.pauseRequested = true
+	if r.cancel != nil {
+		r.cancel()
+	}
+	r.mu.Unlock()
+}
+
+// IsPauseRequested reports whether a pause has been signalled.
+func (r *Run) IsPauseRequested() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.pauseRequested
+}
+
+// ResetContext gives a resumed run a fresh cancellable context and clears
+// the pause flag. The caller must hold no lock; used before re-executing.
+func (r *Run) ResetContext() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ctx, r.cancel = context.WithCancel(context.Background())
+	r.pauseRequested = false
+	r.PendingReq = nil
 }
 
 // SetMessages stores the loop's current conversation so command handlers can
@@ -162,6 +195,102 @@ func NewRunManager(broker *EventBroker) *RunManager {
 // GetTracker returns the FileTrackerManager associated with the RunManager.
 func (m *RunManager) GetTracker() *workspace.FileTrackerManager {
 	return m.tracker
+}
+
+// ReviewFileChange applies a human review decision to a tracked file change.
+// "accept" keeps the change on disk; "reject" reverts it — deleting created
+// files or restoring the pre-change snapshot for modified ones.
+func (m *RunManager) ReviewFileChange(runID, changeID, action string) (*workspace.FileChange, error) {
+	if action != "accept" && action != "reject" {
+		return nil, fmt.Errorf("invalid action %q — expected accept or reject", action)
+	}
+
+	run, ok := m.GetRun(runID)
+	if !ok {
+		return nil, fmt.Errorf("run '%s' not found", runID)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+
+	idx := -1
+	for i := range run.FileChanges {
+		if run.FileChanges[i].ID == changeID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, fmt.Errorf("change '%s' not found", changeID)
+	}
+	fc := run.FileChanges[idx]
+	if fc.Status == workspace.ReviewRejected {
+		return nil, fmt.Errorf("change '%s' was already declined and its content reverted", changeID)
+	}
+	if fc.Status == workspace.ReviewAccepted && action == "accept" {
+		return nil, fmt.Errorf("change '%s' was already accepted", changeID)
+	}
+
+	abs := fc.Path
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(run.Workspace, abs)
+	}
+	rel, err := filepath.Rel(run.Workspace, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return nil, fmt.Errorf("change path escapes the workspace")
+	}
+
+	var status workspace.ReviewStatus
+	if action == "accept" {
+		status = workspace.ReviewAccepted
+	} else {
+		if !fc.CanRevert {
+			return nil, fmt.Errorf("change '%s' cannot be reverted (no snapshot)", changeID)
+		}
+		if err := revertFileChange(fc, abs); err != nil {
+			return nil, fmt.Errorf("revert failed: %w", err)
+		}
+		status = workspace.ReviewRejected
+	}
+
+	run.FileChanges[idx].Status = status
+	run.UpdatedAt = time.Now()
+	updated := run.FileChanges[idx]
+
+	m.tracker.SetStatus(runID, changeID, status)
+
+	m.broker.Publish(Event{
+		ID:        fmt.Sprintf("evt_%d", time.Now().UnixNano()),
+		RunID:     runID,
+		Type:      EventFileChangeReviewed,
+		Timestamp: time.Now(),
+		Data: map[string]interface{}{
+			"changeId": changeID,
+			"path":     fc.Path,
+			"action":   action,
+			"status":   string(status),
+		},
+	})
+
+	return &updated, nil
+}
+
+// revertFileChange restores a file to its pre-change state.
+func revertFileChange(fc workspace.FileChange, abs string) error {
+	switch fc.Type {
+	case workspace.ChangeCreated:
+		if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	case workspace.ChangeModified, workspace.ChangeDeleted:
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(abs, []byte(fc.PreviousContent), 0o644)
+	default:
+		return fmt.Errorf("revert not supported for change type %q", fc.Type)
+	}
 }
 
 // CreateRun initializes and registers a new agent run with optional attachments.
@@ -285,6 +414,7 @@ func (m *RunManager) DeleteRun(id string) bool {
 		}
 	}
 	run.mu.Unlock()
+	m.DeleteCheckpoint(run)
 	return true
 }
 

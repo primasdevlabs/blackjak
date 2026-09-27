@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { FileChange, Subagent } from '../types/events';
 import { agentHost } from '../host';
+import { agentStore } from '../state/agentStore';
 import { DiffView } from './DiffView';
+import {
+  CheckIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
 
 interface ChangeTrackerProps {
   changes: FileChange[];
@@ -9,8 +14,10 @@ interface ChangeTrackerProps {
 }
 
 /**
- * Groups file changes by owning subagent and renders them in an expandable tree.
- * Shows per-file additions/deletions summary and View Diff / Revert actions.
+ * Groups file changes by owning agent and renders them with per-change
+ * approve / decline review actions, matching the Devin-style workflow:
+ * changes are written live so the agent keeps working, and declining a
+ * change reverts the file on disk (delete for created, restore for edits).
  */
 export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents }) => {
   const [expandedDiff, setExpandedDiff] = useState<string | null>(null);
@@ -26,6 +33,8 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
     }
     groupedChanges.get(key)!.push(change);
   }
+
+  const pendingCount = changes.filter((c) => !c.status || c.status === 'pending').length;
 
   // Resolve agent role names
   const getAgentLabel = (agentId: string): string => {
@@ -64,14 +73,35 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
     agentHost.openDiff(path);
   };
 
-  const handleRevert = (path: string) => {
-    agentHost.postMessage({ command: 'revertFile', payload: { path } });
+  const review = (change: FileChange, action: 'accept' | 'reject') => {
+    agentStore.reviewFileChange(change.id, action);
   };
 
   return (
     <div className="change-tracker">
-      <div className="section-label" style={{ marginBottom: '8px' }}>
-        CHANGES · {changes.length}
+      <div className="change-tracker-header">
+        <div className="section-label">
+          CHANGES · {changes.length}
+          {pendingCount > 0 && <span className="change-pending-count">{pendingCount} pending</span>}
+        </div>
+        {pendingCount > 0 && (
+          <div className="change-bulk-actions">
+            <button
+              className="change-action-btn change-btn-accept"
+              onClick={() => agentStore.reviewAllFileChanges('accept')}
+              title="Keep all pending changes"
+            >
+              <CheckIcon className="icon-xs" /> Approve all
+            </button>
+            <button
+              className="change-action-btn change-btn-decline"
+              onClick={() => agentStore.reviewAllFileChanges('reject')}
+              title="Revert all pending changes"
+            >
+              <XMarkIcon className="icon-xs" /> Decline all
+            </button>
+          </div>
+        )}
       </div>
 
       {Array.from(groupedChanges.entries()).map(([agentId, agentChanges]) => (
@@ -86,9 +116,10 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
               const letter = getTypeLetter(change.type);
               const stats = getDiffStats(change.diff);
               const isExpanded = expandedDiff === change.id;
+              const status = change.status || 'pending';
 
               return (
-                <div key={change.id} className="change-file-entry">
+                <div key={change.id} className={`change-file-entry ${status === 'rejected' ? 'change-rejected' : ''}`}>
                   <div className="change-file-row">
                     <span
                       className={`change-badge ${letter}`}
@@ -120,13 +151,28 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
                           {isExpanded ? 'Hide' : 'Diff'}
                         </button>
                       )}
-                      <button
-                        className="change-action-btn"
-                        onClick={() => handleRevert(change.path)}
-                        title="Revert this change"
-                      >
-                        Revert
-                      </button>
+
+                      {status === 'pending' && (
+                        <>
+                          <button
+                            className="change-action-btn change-btn-accept"
+                            onClick={() => review(change, 'accept')}
+                            title="Keep this change"
+                          >
+                            <CheckIcon className="icon-xs" />
+                          </button>
+                          <button
+                            className="change-action-btn change-btn-decline"
+                            onClick={() => review(change, 'reject')}
+                            title={change.canRevert === false ? 'Cannot revert (no snapshot)' : 'Revert this change'}
+                            disabled={change.canRevert === false}
+                          >
+                            <XMarkIcon className="icon-xs" />
+                          </button>
+                        </>
+                      )}
+                      {status === 'accepted' && <span className="change-status accepted">Approved</span>}
+                      {status === 'rejected' && <span className="change-status rejected">Declined · reverted</span>}
                     </div>
                   </div>
 

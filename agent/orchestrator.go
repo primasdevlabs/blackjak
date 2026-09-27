@@ -58,6 +58,14 @@ func (o *Orchestrator) Spawn(req SpawnRequest) *Subagent {
 	return sub
 }
 
+// Adopt registers a previously-created subagent (e.g. restored from a
+// checkpoint) without emitting a spawn event.
+func (o *Orchestrator) Adopt(sub *Subagent) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.subagents[sub.ID] = sub
+}
+
 // GetSubagent retrieves a subagent by ID.
 func (o *Orchestrator) GetSubagent(id string) (*Subagent, bool) {
 	o.mu.RLock()

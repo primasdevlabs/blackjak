@@ -21,6 +21,7 @@ const (
 type ShellTool struct {
 	ws      *workspace.Workspace
 	approve ApprovalFunc
+	policy  Policy
 }
 
 func (s *ShellTool) Name() string { return "shell" }
@@ -60,11 +61,16 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (i
 		timeout = defaultTimeout
 	}
 
-	if destructivePattern.MatchString(cmd) {
+	// Hard blocks first — no approval flow can override these.
+	if err := s.policy.CheckCommand(cmd); err != nil {
+		return nil, err
+	}
+
+	if s.policy.CommandNeedsApproval(cmd) {
 		if s.approve == nil {
-			return nil, fmt.Errorf("destructive command requires approval but no approver is configured")
+			return nil, fmt.Errorf("command requires approval but no approver is configured")
 		}
-		ok, err := s.approve(ctx, "command", fmt.Sprintf("Execute destructive command: %s", cmd))
+		ok, err := s.approve(ctx, "command", fmt.Sprintf("Execute command: %s", cmd))
 		if err != nil {
 			return nil, err
 		}

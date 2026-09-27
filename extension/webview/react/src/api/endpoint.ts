@@ -1,6 +1,7 @@
 // Endpoint resolution for the agent backend.
-// Priority: ?port URL param > localStorage override > extension-injected port > default.
-// The localStorage key lets another local app pin a shared backend instance.
+// Priority: ?port URL param > extension-injected port > localStorage override > default.
+// The injected port is authoritative inside the extension webview — localStorage
+// can hold a stale port from an earlier session, so it only applies standalone.
 
 const DEFAULT_PORT = 47811;
 const DEFAULT_HOST = '127.0.0.1';
@@ -28,8 +29,8 @@ export function resolveAgentEndpoint(): AgentEndpoint {
 
   const rawPort =
     params.get('port') ??
-    readStored(PORT_KEY) ??
-    (win.__AGENT_PORT__ ? String(win.__AGENT_PORT__) : null);
+    (win.__AGENT_PORT__ ? String(win.__AGENT_PORT__) : null) ??
+    readStored(PORT_KEY);
   const rawHost =
     params.get('host') ??
     readStored(HOST_KEY) ??
