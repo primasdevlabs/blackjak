@@ -1,32 +1,34 @@
 import * as vscode from 'vscode';
-import { getWorkspaceFolder } from './workspace';
-import { AgentServerManager } from './agentClient';
+import { AgentManager } from './agentManager';
 import { AgentWebviewProvider } from './webviewProvider';
 import { registerAgentCommands } from './commands';
 
-let serverManager: AgentServerManager | undefined;
+let agentManager: AgentManager | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
-  const wsPath = getWorkspaceFolder();
-  const port = 8080;
-  const host = '127.0.0.1';
+  agentManager = new AgentManager(context);
 
-  serverManager = new AgentServerManager(wsPath, port);
-
-  const provider = new AgentWebviewProvider(context.extensionUri, host, port);
+  const provider = new AgentWebviewProvider(context, agentManager);
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(AgentWebviewProvider.viewType, provider)
+    vscode.window.registerWebviewViewProvider('agent.sidebar', provider),
+    {
+      dispose: () => {
+        agentManager?.dispose();
+      },
+    }
   );
 
-  registerAgentCommands(context, provider, serverManager);
+  registerAgentCommands(context, provider, agentManager);
 
-  // Auto-check/start server on extension activation
-  await serverManager.ensureServerRunning(context.extensionPath);
+  // Zero-configuration startup: Go agent starts automatically on extension activation
+  agentManager.start().catch((err) => {
+    vscode.window.showErrorMessage(`Agent startup failed: ${err.message}`);
+  });
 }
 
 export function deactivate() {
-  if (serverManager) {
-    serverManager.stopServer();
+  if (agentManager) {
+    agentManager.stop().catch(() => {});
   }
 }

@@ -25,12 +25,54 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 // GET /health
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, HealthResponse{
-		Status:          "ok",
-		Version:         "1.0.0",
-		ProtocolVersion: ProtocolVersion,
-		Workspace:       s.workspace.RootPath,
-		Timestamp:       time.Now(),
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":          "ok",
+		"ready":           true,
+		"version":         "1.0.0",
+		"protocolVersion": ProtocolVersion,
+		"port":            s.Port(),
+		"workspace":       s.workspace.RootPath,
+		"timestamp":       time.Now(),
+	})
+}
+
+// GET /api/initial-state
+func (s *Server) handleInitialState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	cfg := s.settingsManager.GetMaskedConfig()
+	runs := s.runManager.ListRuns()
+	dtos := make([]RunDTO, len(runs))
+	for i, r := range runs {
+		dtos[i] = toRunDTO(r)
+	}
+	queue := s.queueManager.List()
+	modelsMap := s.settingsManager.RefreshModels("")
+
+	writeJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"type": "agent.initialized",
+			"data": map[string]interface{}{
+				"workspace": map[string]interface{}{
+					"root": s.workspace.RootPath,
+				},
+				"settings":  cfg,
+				"providers": cfg.Providers,
+				"models":    modelsMap,
+				"runs":      dtos,
+				"queue":     queue,
+				"capabilities": map[string]bool{
+					"tools":         true,
+					"subagents":     true,
+					"promptQueue":   true,
+					"effortControl": true,
+				},
+			},
+		},
 	})
 }
 

@@ -19,9 +19,10 @@ import (
 )
 
 func main() {
-	serverMode := flag.Bool("server", false, "Start the HTTP/WebSocket API server")
+	cliMode := flag.Bool("cli", false, "Run in interactive terminal CLI mode instead of server mode")
+	_ = flag.Bool("server", true, "Start the HTTP/WebSocket API server")
 	host := flag.String("host", "127.0.0.1", "Host address to listen on")
-	port := flag.Int("port", 0, "Port to listen on (0 for random available port)")
+	port := flag.Int("port", 0, "Port to listen on (0 for dynamic free port allocation)")
 	wsDir := flag.String("workspace", "", "Path to working workspace directory")
 	flag.Parse()
 
@@ -38,10 +39,10 @@ func main() {
 		*wsDir = absWs
 	}
 
-	if *serverMode {
-		runServer(*host, *port, *wsDir)
-	} else {
+	if *cliMode {
 		runCLI(*wsDir)
+	} else {
+		runServer(*host, *port, *wsDir)
 	}
 }
 
@@ -63,10 +64,18 @@ func runServer(host string, port int, wsDir string) {
 		}
 	}()
 
-	// Give server time to bind port
-	time.Sleep(100 * time.Millisecond)
-	fmt.Printf("Agent API Server running at http://%s:%d (Workspace: %s)\n", host, server.Port(), wsDir)
-	fmt.Printf("Health check: http://%s:%d/health\n", host, server.Port())
+	// Wait briefly for listener port binding
+	for i := 0; i < 50; i++ {
+		if server.Port() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	allocatedPort := server.Port()
+	fmt.Printf("Agent API Server running at http://%s:%d (Workspace: %s)\n", host, allocatedPort, wsDir)
+	fmt.Printf("Health check: http://%s:%d/health\n", host, allocatedPort)
+	fmt.Printf(`{"status":"ok","ready":true,"version":"1.0.0","protocolVersion":"1","port":%d,"workspace":"%s"}`+"\n", allocatedPort, strings.ReplaceAll(wsDir, "\\", "\\\\"))
 
 	<-sigCh
 	fmt.Println("\nShutting down Agent Server...")
@@ -92,7 +101,6 @@ func runCLI(wsDir string) {
 	ws := workspace.New(wsDir)
 	ag := agent.New(broker, nil, ws, nil)
 
-	// Subscribe to events for stdout rendering in CLI
 	eventCh, _ := broker.Subscribe("")
 	go func() {
 		for evt := range eventCh {

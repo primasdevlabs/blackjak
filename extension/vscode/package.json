@@ -1,40 +1,57 @@
 {
   "name": "agent-vscode-extension",
-  "displayName": "AI Coding Agent",
-  "description": "IDE Integration for Go AI Coding Agent",
+  "displayName": "BlackJak AI Coding Agent",
+  "description": "Zero-configuration IDE Control Plane and Multi-Agent Orchestrator",
   "version": "1.0.0",
-  "publisher": "ai-agent",
+  "publisher": "primasdevlabs",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "AI",
+    "Programming Languages",
     "Other"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onCommand:agent.open"
+    "onStartupFinished"
   ],
   "contributes": {
     "commands": [
       {
         "command": "agent.open",
-        "title": "Agent: Open UI"
+        "title": "Agent: Open"
       },
       {
         "command": "agent.newTask",
         "title": "Agent: New Task"
       },
       {
+        "command": "agent.planTask",
+        "title": "Agent: Plan Task"
+      },
+      {
         "command": "agent.cancelTask",
         "title": "Agent: Cancel Task"
+      },
+      {
+        "command": "agent.restart",
+        "title": "Agent: Restart Agent"
+      },
+      {
+        "command": "agent.openSettings",
+        "title": "Agent: Open Settings"
+      },
+      {
+        "command": "agent.showLogs",
+        "title": "Agent: Show Agent Logs"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "agent-container",
-          "title": "AI Agent",
+          "title": "BlackJak Agent",
           "icon": "$(robot)"
         }
       ]
@@ -42,8 +59,8 @@
     "views": {
       "agent-container": [
         {
-          "id": "agent.view",
-          "name": "AI Coding Agent"
+          "id": "agent.sidebar",
+          "name": "BlackJak Agent"
         }
       ]
     }
@@ -57,6 +74,10 @@
   "devDependencies": {
     "@types/node": "^18.19.0",
     "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.10",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
   }
 }

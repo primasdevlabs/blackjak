@@ -1,33 +1,40 @@
 import * as vscode from 'vscode';
 import { AgentWebviewProvider } from './webviewProvider';
-import { AgentServerManager } from './agentClient';
+import { AgentManager } from './agentManager';
 
 export function registerAgentCommands(
   context: vscode.ExtensionContext,
   webviewProvider: AgentWebviewProvider,
-  serverManager: AgentServerManager
+  agentManager: AgentManager
 ) {
   const openCmd = vscode.commands.registerCommand('agent.open', async () => {
-    await serverManager.ensureServerRunning(context.extensionPath);
+    await agentManager.waitUntilReady();
     webviewProvider.showPanel();
   });
 
+  const openSidebarCmd = vscode.commands.registerCommand('agent.openSidebar', async () => {
+    await vscode.commands.executeCommand('agent.sidebar.focus');
+  });
+
   const newTaskCmd = vscode.commands.registerCommand('agent.newTask', async () => {
-    await serverManager.ensureServerRunning(context.extensionPath);
+    await agentManager.waitUntilReady();
+    webviewProvider.showPanel();
+  });
+
+  const planTaskCmd = vscode.commands.registerCommand('agent.planTask', async () => {
+    await agentManager.waitUntilReady();
     webviewProvider.showPanel();
   });
 
   const cancelCmd = vscode.commands.registerCommand('agent.cancelTask', async () => {
-    const port = serverManager.getPort();
-    const host = serverManager.getHost();
+    const port = agentManager.getConnection().getPort();
     try {
-      // Fetch active runs and cancel
-      const res = await fetch(`http://${host}:${port}/api/runs`);
+      const res = await fetch(`http://127.0.0.1:${port}/api/runs`);
       const json: any = await res.json();
       if (json.success && Array.isArray(json.data)) {
         for (const run of json.data) {
           if (run.status === 'running' || run.status === 'waiting' || run.status === 'pending') {
-            await fetch(`http://${host}:${port}/api/runs/${run.id}/cancel`, { method: 'POST' });
+            await fetch(`http://127.0.0.1:${port}/api/runs/${run.id}/cancel`, { method: 'POST' });
           }
         }
         vscode.window.showInformationMessage('Active agent task cancelled.');
@@ -37,5 +44,29 @@ export function registerAgentCommands(
     }
   });
 
-  context.subscriptions.push(openCmd, newTaskCmd, cancelCmd);
+  const restartCmd = vscode.commands.registerCommand('agent.restart', async () => {
+    vscode.window.showInformationMessage('Restarting Agent backend...');
+    await agentManager.restart();
+    vscode.window.showInformationMessage('Agent backend restarted.');
+  });
+
+  const openSettingsCmd = vscode.commands.registerCommand('agent.openSettings', async () => {
+    await agentManager.waitUntilReady();
+    webviewProvider.showPanel();
+  });
+
+  const showLogsCmd = vscode.commands.registerCommand('agent.showLogs', () => {
+    agentManager.getOutputChannel().show(true);
+  });
+
+  context.subscriptions.push(
+    openCmd,
+    openSidebarCmd,
+    newTaskCmd,
+    planTaskCmd,
+    cancelCmd,
+    restartCmd,
+    openSettingsCmd,
+    showLogsCmd
+  );
 }

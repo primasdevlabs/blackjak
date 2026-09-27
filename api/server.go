@@ -84,6 +84,7 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/api/initial-state", s.handleInitialState)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/api/events", s.handleEventsSSE)
 	mux.HandleFunc("/api/runs", s.handleCreateRun)

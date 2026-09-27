@@ -107,6 +107,16 @@ export const App: React.FC = () => {
 
         {/* Center Column: Chat Conversation, Activity Feedback & Attachments */}
         <section className="column-center">
+          {(!settings.providers[settings.activeProvider]?.apiKey && settings.providers[settings.activeProvider]?.storageMode !== 'environment' && messages.length === 0) && (
+            <div className="card welcome-card" style={{ margin: '16px', padding: '24px', textAlign: 'center', background: 'var(--bg-card)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>Welcome! Your agent is ready.</h3>
+              <p style={{ color: 'var(--text-secondary)', margin: '12px 0 20px 0', fontSize: '0.9rem' }}>Configure an AI provider to get started.</p>
+              <button className="btn btn-primary" onClick={() => setShowSettings(true)} style={{ padding: '8px 16px', fontWeight: 600 }}>
+                Configure Provider
+              </button>
+            </div>
+          )}
+
           <Chat
             messages={messages}
             onSubmit={handlePromptSubmit}
