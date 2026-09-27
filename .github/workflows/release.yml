@@ -142,3 +142,56 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+
+  publish:
+    # Publishes every platform VSIX to the extension marketplaces.
+    # Each step skips cleanly when its PAT secret isn't configured, so the
+    # job never fails a release for missing credentials.
+    name: Publish to marketplaces
+    needs: [package, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          path: vsix
+          merge-multiple: true
+
+      - name: Publish to VS Code Marketplace
+        working-directory: extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::notice::VSCE_PAT secret not set — skipping VS Code Marketplace publish"
+            exit 0
+          fi
+          for f in ../vsix/blackjak-*.vsix; do
+            base=$(basename "$f" .vsix)
+            # blackjak-<platform>-<version>.vsix -> <platform>
+            target=$(echo "$base" | sed 's/^blackjak-//; s/-[0-9][0-9.]*$//')
+            echo "Publishing $base (target: $target)"
+            npx @vscode/vsce publish --packagePath "$f" --target "$target" --pat "$VSCE_PAT"
+          done
+
+      - name: Publish to Open VSX
+        working-directory: extension
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::notice::OVSX_PAT secret not set — skipping Open VSX publish"
+            exit 0
+          fi
+          for f in ../vsix/blackjak-*.vsix; do
+            base=$(basename "$f" .vsix)
+            target=$(echo "$base" | sed 's/^blackjak-//; s/-[0-9][0-9.]*$//')
+            echo "Publishing $base (target: $target)"
+            npx ovsx publish "$f" --target "$target" --pat "$OVSX_PAT"
+          done
