@@ -7,197 +7,170 @@
  |____/|_|\__,_|\___|_|\_(_)_|\__,_|_|\_\
 ```
 
-# BlackJak - Multi-Agent IDE Coding System
+# BlackJak - Autonomous Multi-Agent IDE Coding System
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go" />
-  <img src="https://img.shields.io/badge/TypeScript-5.0+-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" />
-  <img src="https://img.shields.io/badge/Vite-5.0+-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/TypeScript-5.7+-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/Vite-6.0+-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-v4-38B2AC?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS" />
   <img src="https://img.shields.io/badge/VS_Code-Extension-007ACC?style=for-the-badge&logo=visualstudiocode&logoColor=white" alt="VS Code" />
-  <img src="https://img.shields.io/badge/WebSocket-RFC_6455-000000?style=for-the-badge&logo=websocket&logoColor=white" alt="WebSocket" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License" />
 </p>
 
-BlackJak is an extensible multi-agent IDE coding system. It consists of a Go API backend, a real-time event system, a React UI, and a VS Code extension host.
+BlackJak is an open-source, autonomous multi-agent coding system designed natively for developer environments. It features a high-performance Go backend, a real-time RFC 6455 WebSocket protocol engine, a React 19 sidebar cockpit UI, and a VS Code extension host.
 
-Instead of running as a single monolithic execution loop, BlackJak acts as an orchestrator that creates, configures, and coordinates specialized subagents running in parallel and sequential execution graphs.
+Rather than running as a single prompt loop, BlackJak acts as an agent control plane—orchestrating specialized subagents (Explorer, Architect, Coder, Tester, Reviewer) across structured execution graphs.
 
 ---
 
-## Architecture Overview
+## 🚀 Zero-Configuration Startup
+
+BlackJak requires **zero manual server configuration** for end users:
+
+1. Install the VS Code extension.
+2. Open any workspace in VS Code.
+3. The extension activates automatically, spawns the Go agent backend binary on a free port, verifies health, and connects the WebSocket control plane.
+
+You immediately see:
+`Agent ● Ready`
+
+---
+
+## ⚙️ Architecture
 
 ```
-VS Code Host / Workspace
+VS Code Workspace Host
 │
-├── VS Code Extension (extension/vscode)
+├── VS Code Extension Host (extension/vscode/)
 │   ├── Process Manager (Auto-spawns Go agent backend)
-│   └── Webview Panel (Hosts React UI build)
+│   ├── File Change Tracker & Dirty Document Protection
+│   ├── Tab Manager (Intelligent tab policy & editor placement)
+│   └── Webview Sidebar Panel (Hosts React UI build)
 │       │
-│       │ WebSocket / HTTP (Protocol Version 1)
+│       │ WebSocket / HTTP API (127.0.0.1:<allocated-port>)
 │       ▼
 ├── Go Agent Server (api/)
-│   ├── REST & WebSocket Protocol Handlers
+│   ├── REST & RFC 6455 WebSocket Protocol Handlers
+│   ├── Command Registry (/api/commands & /api/commands/execute)
+│   ├── Settings & Provider Manager (OpenAI, Gemini, Anthropic, Custom)
 │   ├── Event Broker (agent/events.go)
 │   └── Run Manager (agent/run.go)
 │       │
-│       ├── Orchestrator Agent (agent/orchestrator.go)
-│       │   ├── Explorer Agent
-│       │   ├── Architecture Agent
-│       │   ├── Coder Agent
-│       │   ├── Tester Agent
-│       │   └── Reviewer Agent
-│       │
-│       ├── Tool Registry & Execution (tools/)
-│       ├── Workspace Sandbox Security (workspace/sandbox.go)
+│       ├── Orchestrator Agent & Subagents (agent/orchestrator.go)
+│       ├── Context Compactor & Budget Engine (context/compaction.go)
+│       ├── Workspace Watcher & Normalized Event Engine (workspace/watcher.go)
 │       └── File Lease Lock Manager (workspace/tracker.go)
 ```
 
 ---
 
-## Key Features
+## ✨ Key Capabilities
 
-### 1. Multi-Agent Orchestration
-- **Orchestrator Agent**: Analyzes user goals, breaks down requirements into structured execution plans, and delegates subtasks to specialized subagents.
-- **Specialized Roles**: Supports Explorer, Architect, Coder, Tester, Reviewer, Debugger, Refactorer, and custom subagent roles.
-- **Parallel & Sequential Subagent Execution**: Uses Go structured concurrency (`sync.WaitGroup`, child contexts) for concurrent file exploration and architectural analysis.
-- **Inter-Agent Handoffs**: Subagents report findings and pass structured data directly to successor subagents.
+### 1. Multi-Agent Subagent Orchestration
+- **Orchestrator**: Breaks complex user goals into high-level plans and spawns specialized subagents (`Explorer`, `Architect`, `Coder`, `Tester`, `Reviewer`).
+- **Parallel & Sequential Execution**: Spawns parallel exploration tasks using Go structured concurrency.
+- **Inter-Agent Handoffs**: Subagents pass findings and structured artifacts directly to successor subagents.
 
-### 2. Workspace Intelligence & Reference Parsing
-- **Prompt Reference Parser**: Automatically detects and resolves `@path/to/file.go:84` and `@path/to/folder` references against the workspace root.
-- **Interactive File References**: UI renders file paths as clickable elements that instruct VS Code to open the exact file and jump to the target line.
-- **Context-Aware Attachments**: Supports explicit file and folder attachments drag-and-dropped into the chat prompt.
+### 2. Native Context Management & Automatic Compaction
+- **Usable Budget Monitoring**: Calculates usable working memory budget (`UsableMax = MaxTokens - ReservedOutput(16k) - ReservedTools(8k)`).
+- **Automatic Threshold Compaction**: Automatically compacts context at ≥80% usable pressure.
+- **Structured Representation**: Preserves critical task objectives, implementation decisions, modified file states, test results, and subagent findings while discarding old tool outputs and stale search results.
+- **Inline Badge & Modal**: Displays subtle inline activity badges (`✦ Context compacted · 42.1k → 11.7k`) with details modal popovers.
 
-### 3. Concurrency Protection & File Tracking
-- **File Lease Locks**: Prevents multiple subagents from overwriting the same file concurrently. Requests exclusive locks and detects workspace edit conflicts.
-- **Workspace Tracker**: Logs all file creations, modifications, deletions, renames, and moves with agent attribution and diff availability.
+### 3. Extensible `/` Slash Command System
+Typing `/` in the composer opens an inline autocomplete menu supporting keyboard navigation:
 
-### 4. Ambient Activity Feedback System
-- **Event-Driven Categories**: Converts factual agent events into ambient status categories (`orchestrating`, `exploring`, `thinking`, `debugging`, `testing`, `editing`, `finishing`).
-- **Dynamic Rotation**: Periodically rotates ambient activity feedback using pseudo-random selection (3s to 8s intervals) without back-to-back message repetitions.
+| Command | Description | Action |
+|---|---|---|
+| `/compact` | Compact context | Immediately compacts current context & displays token savings. |
+| `/context` | Context status | Opens context composition breakdown modal. |
+| `/clear` | New context | Prompts for confirmation and resets conversation context. |
+| `/summarize` | Summarize task | Generates a durable task summary card. |
+| `/plan` | Create plan | Switches operating mode to Plan. |
+| `/model` | Change model | Opens model configuration control plane. |
+| `/effort` | Change effort | Opens reasoning effort selector. |
+| `/agents` | Show subagents | Opens active subagents overlay modal. |
+| `/queue` | Show queue | Displays prompt queue items. |
+| `/changes` | Show changes | Opens file changes panel. |
+| `/files` | Attach files | Opens file attachment picker. |
+| `/undo` | Undo last step | Reverts last agent step. |
+| `/stop` | Stop agent | Cancels active run execution graph. |
 
-### 5. VS Code Integration
-- **Auto Backend Lifecycle**: Extension host checks health (`/health`) and auto-spawns the Go agent process on an available port.
-- **Native Editor & Diff Viewers**: Triggers native VS Code side-by-side diffs (`vscode.diff`) and opens newly created files automatically.
+### 4. Live File Change Tracking & Intelligent Tab Policy
+- **Normalized Workspace Watcher**: Watches filesystem modifications and normalizes raw OS events (debouncing multiple writes into single `MODIFIED` events).
+- **Unsaved Document Safety**: Detects dirty documents (`document.isDirty == true`) and prompts before destructive modifications.
+- **Intelligent Tab Policy**:
+  - Automatically opens 1–5 touched files beside current editor with `preserveFocus: true`.
+  - For 6+ touched files, opens primary files and shows a notification for remaining files.
+  - Never steals active editor focus or creates duplicate tabs for already open files.
 
 ---
 
-## Wire Protocol & API Endpoints
+## 🛠️ Installation & Developer Setup
 
-The Go server exposes a transport-neutral HTTP and WebSocket interface:
+### Prerequisites
+- **Go**: 1.22+
+- **Node.js**: 20.0+
+- **npm**: 10.0+
+- **VS Code**: 1.85+
+
+### Build from Source
+
+1. Clone repository:
+   ```bash
+   git clone https://github.com/primasdevlabs/blackjak.git
+   cd blackjak
+   ```
+
+2. Build all components:
+   ```bash
+   make build
+   ```
+
+3. Run unit tests & typechecks:
+   ```bash
+   make test
+   ```
+
+4. Run local backend server:
+   ```bash
+   make run
+   ```
+
+5. Run UI Vite dev server:
+   ```bash
+   make ui
+   ```
+
+---
+
+## 🌐 Wire Protocol & API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Returns server status, version, protocol version, and root workspace path. |
+| `GET` | `/health` | Health check probe returning readiness status & workspace path. |
+| `GET` | `/api/initial-state` | Handshake endpoint returning initial configuration, runs, queue & models. |
+| `GET` / `PATCH` | `/api/settings` | Settings control plane API. |
+| `GET` | `/api/providers` | Lists active and available LLM providers. |
+| `GET` / `POST` | `/api/commands` | Slash command registry endpoint. |
+| `POST` | `/api/commands/execute` | Executes registered slash commands. |
+| `GET` / `POST` | `/api/queue` | Manage prompt queue items. |
 | `POST` | `/api/runs` | Initializes and launches a new agent run task. |
-| `GET` | `/api/runs` | Lists all agent runs in reverse chronological order. |
-| `GET` | `/api/runs/:id` | Retrieves detailed state, events, subagents, and file changes for a run. |
-| `POST` | `/api/runs/:id/cancel` | Cancels an active run and propagates cancellation to all subagents. |
-| `POST` | `/api/runs/:id/approval` | Submits a human approval decision (`granted` or `denied`). |
-| `GET` | `/api/events` | Server-Sent Events (SSE) fallback event stream. |
+| `GET` | `/api/events` | Server-Sent Events (SSE) event stream. |
 | `WS` | `/ws` | Real-time WebSocket connection endpoint (RFC 6455). |
 
-### WebSocket Client Commands
-```json
-{
-  "type": "run.start",
-  "data": {
-    "prompt": "Fix authentication bug in @src/middleware/auth.ts:84",
-    "workspace": "C:/wamp64/www/blackjak",
-    "attachments": []
-  }
-}
-```
+---
 
-```json
-{
-  "type": "approval.respond",
-  "data": {
-    "runId": "run_12345",
-    "requestId": "app_67890",
-    "granted": true
-  }
-}
-```
+## 🤝 Contributing
+
+We welcome open-source contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md) before submitting pull requests.
+
+For security vulnerability reports, please review our [Security Policy](SECURITY.md).
 
 ---
 
-## Project Structure
+## 📄 License
 
-```
-.
-├── cmd/
-│   └── agent/
-│       └── main.go              # CLI & Server launcher
-├── agent/
-│   ├── agent.go                 # Main execution loop
-│   ├── orchestrator.go          # Multi-agent orchestrator
-│   ├── subagent.go              # Subagent model & message types
-│   ├── run.go                   # Run model & approval flow
-│   ├── events.go                # Multi-subscriber EventBroker
-│   ├── state.go                 # Agent state
-│   ├── planner.go               # Plan generation
-│   ├── context.go               # Context assembler
-│   └── memory.go                # Agent memory
-├── api/
-│   ├── server.go                # HTTP & WebSocket server
-│   ├── handlers.go              # REST & SSE handlers
-│   ├── websocket.go             # RFC 6455 WebSocket upgrader
-│   └── protocol.go              # Versioned protocol DTOs
-├── workspace/
-│   ├── workspace.go             # Workspace boundary validator
-│   ├── sandbox.go               # Security sandbox
-│   ├── reference.go             # Prompt @-reference parser
-│   └── tracker.go               # File change & lease lock manager
-├── tools/                       # File, shell, git, search, test tools
-├── ui/
-│   ├── src/
-│   │   ├── activity/            # Activity feedback manager
-│   │   ├── api/                 # REST & WebSocket client
-│   │   ├── components/          # React components (Heroicons)
-│   │   ├── hooks/               # Custom React hooks
-│   │   ├── state/               # State store
-│   │   └── types/               # TypeScript interfaces
-│   ├── package.json
-│   └── vite.config.ts
-├── extension/
-│   └── vscode/                  # VS Code extension host
-├── Makefile                     # Build & developer tasks
-└── .gitignore
-```
-
----
-
-## Developer Commands & Makefile Targets
-
-### Build Everything
-```bash
-make build
-```
-Executes:
-1. `go build -o bin/agent.exe ./cmd/agent` (Go agent server binary)
-2. `cd ui && npm run build` (React UI Vite production build)
-3. `cd extension/vscode && npm run build` (VS Code extension build)
-
-### Run Unit Tests
-```bash
-make test
-```
-Runs all Go backend unit tests across `agent/`, `api/`, and `workspace/`, followed by React UI TypeScript typechecks.
-
-### Run Agent Server
-```bash
-make run
-```
-Launches the Go agent server on port 8080 listening on `127.0.0.1`.
-
-### Run React UI Dev Server
-```bash
-make ui
-```
-Starts the Vite UI development server at `http://localhost:5173`.
-
----
-
-## License
-
-MIT License.
+BlackJak is released under the [MIT License](LICENSE).
