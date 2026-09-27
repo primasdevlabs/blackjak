@@ -197,6 +197,13 @@ func (sm *SettingsManager) GetMaskedConfig() SettingsConfig {
 	return cp
 }
 
+// GetConfig returns the unmasked current settings configuration.
+func (sm *SettingsManager) GetConfig() SettingsConfig {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.config
+}
+
 // UpdateConfig updates settings and re-initializes the active provider.
 func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 	sm.mu.Lock()

@@ -47,7 +47,7 @@ export const FileChange: React.FC<FileChangeProps> = ({ changes }) => {
               <span className={`change-badge ${letter}`} onClick={() => handleShowDiff(c)}>
                 {letter}
               </span>
-              <span className="font-mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} onClick={() => handleOpenFile(c.path)}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} onClick={() => handleOpenFile(c.path)}>
                 {c.path}
               </span>
             </div>

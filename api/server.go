@@ -30,6 +30,7 @@ type Server struct {
 	runManager      *agent.RunManager
 	settingsManager *SettingsManager
 	queueManager    *agent.QueueManager
+	commandRegistry *CommandRegistry
 	agent           *agent.Agent
 	httpServer      *http.Server
 	listener        net.Listener
@@ -47,6 +48,7 @@ func NewServer(cfg ServerConfig, llmClient llm.Client) *Server {
 	rm := agent.NewRunManager(broker)
 	sm := NewSettingsManager()
 	qm := agent.NewQueueManager(broker)
+	cr := NewCommandRegistry()
 
 	toolRegistry := tools.NewRegistry()
 	toolRegistry.Register(tools.NewFilesystemTool())
@@ -65,6 +67,7 @@ func NewServer(cfg ServerConfig, llmClient llm.Client) *Server {
 		runManager:      rm,
 		settingsManager: sm,
 		queueManager:    qm,
+		commandRegistry: cr,
 		agent:           ag,
 	}
 }
@@ -94,6 +97,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/providers/", s.handleProviderSubroutes)
 	mux.HandleFunc("/api/queue", s.handleQueue)
 	mux.HandleFunc("/api/queue/", s.handleQueueSubroutes)
+	mux.HandleFunc("/api/commands", s.handleCommands)
+	mux.HandleFunc("/api/commands/execute", s.handleExecuteCommand)
 
 	handler := s.withCORS(mux)
 

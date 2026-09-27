@@ -20,7 +20,7 @@ export const ActivityFeedback: React.FC = () => {
   return (
     <div className="activity-transient" style={{ padding: '4px 32px' }}>
       <span>✦</span>
-      <span className="font-mono" style={{ fontSize: '12px' }}>{displayMsg}</span>
+      <span style={{ fontSize: '12px' }}>{displayMsg}</span>
     </div>
   );
 };

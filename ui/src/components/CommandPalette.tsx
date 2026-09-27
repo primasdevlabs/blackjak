@@ -108,7 +108,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose,
                     <span>{cmd.label}</span>
                   </div>
                   {cmd.shortcut && (
-                    <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-disabled)' }}>
+                    <span style={{ fontSize: '11px', color: 'var(--text-disabled)' }}>
                       {cmd.shortcut}
                     </span>
                   )}

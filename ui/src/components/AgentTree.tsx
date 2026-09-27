@@ -11,7 +11,7 @@ export const AgentTree: React.FC<AgentTreeProps> = ({ subagents, selectedId, onS
   return (
     <div style={{ margin: '8px 0' }}>
       <div className="section-label">AGENTS</div>
-      <div className="font-mono" style={{ padding: '0 16px', fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+      <div style={{ padding: '0 16px', fontSize: '11.5px', color: 'var(--text-secondary)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
           <span className="status-dot working" style={{ width: '6px', height: '6px' }} />
           <span>Orchestrator</span>

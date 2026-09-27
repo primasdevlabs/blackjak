@@ -15,7 +15,7 @@ export const DiffView: React.FC<DiffViewProps> = ({ diffText, filePath, onClose 
   return (
     <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden', margin: '8px 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', borderBottom: '1px solid var(--border)', backgroundColor: 'var(--bg-elevated)' }}>
-        <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{filePath || 'Diff View'}</span>
+        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{filePath || 'Diff View'}</span>
         {onClose && (
           <button style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={onClose}>
             <XMarkIcon className="icon-sm" />
@@ -23,7 +23,7 @@ export const DiffView: React.FC<DiffViewProps> = ({ diffText, filePath, onClose 
         )}
       </div>
 
-      <div className="font-mono" style={{ fontSize: '11.5px', lineHeight: '1.5', overflowX: 'auto', padding: '6px 0' }}>
+      <div style={{ fontSize: '11.5px', lineHeight: '1.5', overflowX: 'auto', padding: '6px 0' }}>
         {lines.map((line, idx) => {
           let bg = 'transparent';
           let color = 'var(--text-primary)';
