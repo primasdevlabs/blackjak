@@ -1,4 +1,4 @@
-import { SettingsConfig, settingsApi, Model } from '../api/settings';
+import { SettingsConfig, settingsApi, Model, EffortLevel } from '../api/settings';
 
 type Listener = () => void;
 
@@ -11,9 +11,14 @@ class SettingsStore {
       'Anthropic': { baseUrl: 'https://api.anthropic.com/v1', storageMode: 'environment' },
       'OpenAI-compatible': { baseUrl: 'http://localhost:11434/v1', modelId: 'llama3.2', storageMode: 'stored' },
     },
-    thinkingModelId: 'gpt-4o',
-    codingModelId: 'claude-3-5-sonnet-20241022',
-    fastModelId: 'gpt-4o-mini',
+    thinking: { providerId: 'Anthropic', modelId: 'claude-opus-5', role: 'thinking' },
+    coding: { providerId: 'OpenAI', modelId: 'gpt-5.3-codex', role: 'coding' },
+    fast: { providerId: 'Google Gemini', modelId: 'gemini-3.5-flash-lite', role: 'fast' },
+    review: { providerId: 'Anthropic', modelId: 'claude-sonnet-5', role: 'review' },
+    thinkingModelId: 'claude-opus-5',
+    codingModelId: 'gpt-5.3-codex',
+    fastModelId: 'gemini-3.5-flash-lite',
+    reviewModelId: 'claude-sonnet-5',
     useSeparateModels: true,
     effort: 'medium',
     mode: 'code',
@@ -29,7 +34,7 @@ class SettingsStore {
       coding: 'coding',
       debugging: 'thinking',
       testing: 'coding',
-      review: 'thinking',
+      review: 'review',
       summarization: 'fast',
     },
   };
@@ -44,6 +49,10 @@ class SettingsStore {
 
   getProviderModels(providerId: string): Model[] {
     return this.providerModels[providerId] || [];
+  }
+
+  getAllProviderModels(): Record<string, Model[]> {
+    return this.providerModels;
   }
 
   getProviderStatus(providerId: string): 'connected' | 'disconnected' | 'testing' {
@@ -93,6 +102,19 @@ class SettingsStore {
     } catch (err: any) {
       this.providerStatus[providerId] = 'disconnected';
       this.notify();
+      throw err;
+    }
+  }
+
+  async refreshModels(providerId?: string) {
+    try {
+      const models = await settingsApi.refreshModels(providerId);
+      const target = providerId || this.settings.activeProvider;
+      this.providerModels[target] = models;
+      this.notify();
+      return models;
+    } catch (err) {
+      console.error('Failed to refresh models:', err);
       throw err;
     }
   }

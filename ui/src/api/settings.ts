@@ -1,5 +1,14 @@
 import { apiClient } from './client';
 
+export type EffortLevel = 'low' | 'medium' | 'high' | 'extra_high';
+export type ModelRole = 'thinking' | 'coding' | 'fast' | 'review';
+
+export interface ModelConfig {
+  providerId: string;
+  modelId: string;
+  role: ModelRole;
+}
+
 export interface ProviderCredentials {
   apiKey?: string;
   baseUrl?: string;
@@ -11,11 +20,16 @@ export interface ProviderCredentials {
 export interface SettingsConfig {
   activeProvider: string;
   providers: Record<string, ProviderCredentials>;
+  thinking: ModelConfig;
+  coding: ModelConfig;
+  fast: ModelConfig;
+  review: ModelConfig;
   thinkingModelId: string;
   codingModelId: string;
   fastModelId: string;
+  reviewModelId?: string;
   useSeparateModels: boolean;
-  effort: 'minimal' | 'low' | 'medium' | 'high' | 'maximum';
+  effort: EffortLevel;
   mode: 'plan' | 'code';
   parallelSubagents: boolean;
   maxSubagents: number;
@@ -33,8 +47,12 @@ export interface Model {
   supportsTools: boolean;
   supportsVision: boolean;
   supportsReasoning: boolean;
+  supportsEffort?: boolean;
   contextWindow: number;
   defaultMaxTokens: number;
+  category?: 'coding' | 'reasoning' | 'fast' | 'realtime' | 'audio' | 'image' | 'embedding' | 'openweight';
+  status?: 'current' | 'deprecated' | 'retired';
+  defaultRoles?: ModelRole[];
 }
 
 export interface QueuedPrompt {
@@ -72,6 +90,16 @@ export class AgentSettingsApi {
     });
     const json = await res.json();
     if (!json.success) throw new Error(json.error || 'Failed to test provider connection');
+    return json.data;
+  }
+
+  async refreshModels(providerId: string = ''): Promise<Model[]> {
+    const endpoint = providerId
+      ? `${apiClient.getBaseUrl()}/api/providers/${encodeURIComponent(providerId)}/refresh`
+      : `${apiClient.getBaseUrl()}/api/providers/OpenAI/refresh`;
+    const res = await fetch(endpoint, { method: 'POST' });
+    const json = await res.json();
+    if (!json.success) throw new Error(json.error || 'Failed to refresh models');
     return json.data;
   }
 

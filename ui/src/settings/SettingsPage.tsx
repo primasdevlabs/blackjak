@@ -109,14 +109,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ agentStatus, workspa
           {activeTab === 'models' && (
             <ModelSettings
               useSeparateModels={settings.useSeparateModels}
-              thinkingModelId={settings.thinkingModelId}
-              codingModelId={settings.codingModelId}
-              fastModelId={settings.fastModelId}
-              availableModels={availableModels}
+              thinking={settings.thinking || { providerId: 'Anthropic', modelId: settings.thinkingModelId || 'claude-opus-5', role: 'thinking' }}
+              coding={settings.coding || { providerId: 'OpenAI', modelId: settings.codingModelId || 'gpt-5.3-codex', role: 'coding' }}
+              fast={settings.fast || { providerId: 'Google Gemini', modelId: settings.fastModelId || 'gemini-3.5-flash-lite', role: 'fast' }}
+              review={settings.review || { providerId: 'Anthropic', modelId: settings.reviewModelId || 'claude-sonnet-5', role: 'review' }}
+              effort={settings.effort}
+              availableModelsMap={settingsStore.getAllProviderModels()}
               onChangeSeparate={(val) => handleUpdate({ useSeparateModels: val })}
-              onChangeThinking={(id) => handleUpdate({ thinkingModelId: id })}
-              onChangeCoding={(id) => handleUpdate({ codingModelId: id })}
-              onChangeFast={(id) => handleUpdate({ fastModelId: id })}
+              onChangeModelConfig={(role, cfg) => {
+                if (role === 'thinking') handleUpdate({ thinking: cfg, thinkingModelId: cfg.modelId });
+                else if (role === 'coding') handleUpdate({ coding: cfg, codingModelId: cfg.modelId });
+                else if (role === 'fast') handleUpdate({ fast: cfg, fastModelId: cfg.modelId });
+                else if (role === 'review') handleUpdate({ review: cfg, reviewModelId: cfg.modelId });
+              }}
+              onChangeEffort={(effort) => handleUpdate({ effort })}
             />
           )}
 

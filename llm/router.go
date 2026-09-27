@@ -18,21 +18,13 @@ const (
 	TaskSummary     TaskType = "summarization"
 )
 
-// ModelRole defines model assignment roles.
-type ModelRole string
-
-const (
-	RoleThinking ModelRole = "thinking"
-	RoleCoding   ModelRole = "coding"
-	RoleFast     ModelRole = "fast"
-)
-
 // RouterConfig maps task types to model roles.
 type RouterConfig struct {
-	UseSeparateModels bool                 `json:"useSeparateModels"`
-	ThinkingModelID   string               `json:"thinkingModelId"`
-	CodingModelID     string               `json:"codingModelId"`
-	FastModelID       string               `json:"fastModelId"`
+	UseSeparateModels bool                   `json:"useSeparateModels"`
+	ThinkingModelID   string                 `json:"thinkingModelId"`
+	CodingModelID     string                 `json:"codingModelId"`
+	FastModelID       string                 `json:"fastModelId"`
+	ReviewModelID     string                 `json:"reviewModelId"`
 	TaskRoutes        map[TaskType]ModelRole `json:"taskRoutes"`
 }
 
@@ -40,17 +32,18 @@ type RouterConfig struct {
 func DefaultRouterConfig() RouterConfig {
 	return RouterConfig{
 		UseSeparateModels: true,
-		ThinkingModelID:   "gpt-4o",
-		CodingModelID:     "claude-3-5-sonnet",
-		FastModelID:       "gpt-4o-mini",
+		ThinkingModelID:   "claude-opus-5",
+		CodingModelID:     "gpt-5.3-codex",
+		FastModelID:       "gemini-3.5-flash-lite",
+		ReviewModelID:     "claude-sonnet-5",
 		TaskRoutes: map[TaskType]ModelRole{
-			TaskPlanning:    RoleThinking,
-			TaskExploration: RoleFast,
-			TaskCoding:      RoleCoding,
-			TaskDebugging:   RoleThinking,
-			TaskTesting:     RoleCoding,
-			TaskReview:      RoleThinking,
-			TaskSummary:     RoleFast,
+			TaskPlanning:    ModelRoleThinking,
+			TaskExploration: ModelRoleFast,
+			TaskCoding:      ModelRoleCoding,
+			TaskDebugging:   ModelRoleThinking,
+			TaskTesting:     ModelRoleCoding,
+			TaskReview:      ModelRoleReview,
+			TaskSummary:     ModelRoleFast,
 		},
 	}
 }
@@ -101,15 +94,20 @@ func (r *ModelRouter) Select(ctx context.Context, task TaskType) (Model, error) 
 
 	targetRole, ok := r.config.TaskRoutes[task]
 	if !ok {
-		targetRole = RoleCoding
+		targetRole = ModelRoleCoding
 	}
 
 	var modelID string
 	switch targetRole {
-	case RoleThinking:
+	case ModelRoleThinking:
 		modelID = r.config.ThinkingModelID
-	case RoleFast:
+	case ModelRoleFast:
 		modelID = r.config.FastModelID
+	case ModelRoleReview:
+		modelID = r.config.ReviewModelID
+		if modelID == "" {
+			modelID = r.config.ThinkingModelID
+		}
 	default:
 		modelID = r.config.CodingModelID
 	}

@@ -153,11 +153,10 @@ export const App: React.FC = () => {
             value={settings.effort}
             onChange={(e) => settingsStore.updateSettings({ effort: e.target.value as any })}
           >
-            <option value="minimal">Minimal</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
-            <option value="maximum">Maximum</option>
+            <option value="extra_high">Extra High</option>
           </select>
         </div>
 

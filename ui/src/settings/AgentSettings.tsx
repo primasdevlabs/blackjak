@@ -17,7 +17,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({ settings, onUpdate
         <div className="form-row">
           <label>Effort Level:</label>
           <div className="radio-group-pills">
-            {['minimal', 'low', 'medium', 'high', 'maximum'].map((lvl) => (
+            {['low', 'medium', 'high', 'extra_high'].map((lvl) => (
               <label key={lvl} className={`pill-btn ${settings.effort === lvl ? 'active' : ''}`}>
                 <input
                   type="radio"
@@ -26,7 +26,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({ settings, onUpdate
                   checked={settings.effort === lvl}
                   onChange={() => onUpdate({ effort: lvl as any })}
                 />
-                <span>{lvl.toUpperCase()}</span>
+                <span>{lvl === 'extra_high' ? 'EXTRA HIGH' : lvl.toUpperCase()}</span>
               </label>
             ))}
           </div>

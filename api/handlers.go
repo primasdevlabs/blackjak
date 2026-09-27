@@ -93,9 +93,19 @@ func (s *Server) handleProviderSubroutes(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if len(parts) >= 2 && parts[1] == "refresh" && (r.Method == http.MethodPost || r.Method == http.MethodGet) {
+		catalogMap := s.settingsManager.RefreshModels(providerID)
+		models := catalogMap[providerID]
+		writeJSON(w, http.StatusOK, APIResponse{
+			Success: true,
+			Data:    models,
+		})
+		return
+	}
+
 	if len(parts) >= 2 && parts[1] == "models" && r.Method == http.MethodGet {
-		_, _, models := s.settingsManager.TestProvider(providerID)
-		writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: models})
+		catalogMap := s.settingsManager.RefreshModels(providerID)
+		writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: catalogMap[providerID]})
 		return
 	}
 

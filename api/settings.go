@@ -27,11 +27,10 @@ const (
 type EffortLevel string
 
 const (
-	EffortMinimal EffortLevel = "minimal"
-	EffortLow     EffortLevel = "low"
-	EffortMedium  EffortLevel = "medium"
-	EffortHigh    EffortLevel = "high"
-	EffortMaximum EffortLevel = "maximum"
+	EffortLow       EffortLevel = "low"
+	EffortMedium    EffortLevel = "medium"
+	EffortHigh      EffortLevel = "high"
+	EffortExtraHigh EffortLevel = "extra_high"
 )
 
 // AgentMode defines operating mode.
@@ -53,38 +52,65 @@ type ProviderCredentials struct {
 
 // SettingsConfig holds all runtime and provider configuration.
 type SettingsConfig struct {
-	ActiveProvider     string                         `json:"activeProvider"`
-	Providers          map[string]ProviderCredentials `json:"providers"`
-	ThinkingModelID    string                         `json:"thinkingModelId"`
-	CodingModelID      string                         `json:"codingModelId"`
-	FastModelID        string                         `json:"fastModelId"`
-	UseSeparateModels  bool                           `json:"useSeparateModels"`
-	Effort             EffortLevel                    `json:"effort"`
-	Mode               AgentMode                      `json:"mode"`
-	ParallelSubagents  bool                           `json:"parallelSubagents"`
-	MaxSubagents       int                            `json:"maxSubagents"`
-	PromptQueueBehavior string                        `json:"promptQueueBehavior"` // "sequential", "parallel", "ask"
-	AutoOpenFile       bool                           `json:"autoOpenFile"`
-	AutoOpenDiff       bool                           `json:"autoOpenDiff"`
-	AskDestructiveOps  bool                           `json:"askDestructiveOps"`
-	ModelRoutes        map[string]string              `json:"modelRoutes"` // task -> role
+	ActiveProvider      string                         `json:"activeProvider"`
+	Providers           map[string]ProviderCredentials `json:"providers"`
+	Thinking            llm.ModelConfig                `json:"thinking"`
+	Coding              llm.ModelConfig                `json:"coding"`
+	Fast                llm.ModelConfig                `json:"fast"`
+	Review              llm.ModelConfig                `json:"review"`
+	ThinkingModelID     string                         `json:"thinkingModelId"`
+	CodingModelID       string                         `json:"codingModelId"`
+	FastModelID         string                         `json:"fastModelId"`
+	ReviewModelID       string                         `json:"reviewModelId"`
+	UseSeparateModels   bool                           `json:"useSeparateModels"`
+	Effort              EffortLevel                    `json:"effort"`
+	Mode                AgentMode                      `json:"mode"`
+	ParallelSubagents   bool                           `json:"parallelSubagents"`
+	MaxSubagents        int                            `json:"maxSubagents"`
+	PromptQueueBehavior string                         `json:"promptQueueBehavior"` // "sequential", "parallel", "ask"
+	AutoOpenFile        bool                           `json:"autoOpenFile"`
+	AutoOpenDiff        bool                           `json:"autoOpenDiff"`
+	AskDestructiveOps   bool                           `json:"askDestructiveOps"`
+	ModelRoutes         map[string]string              `json:"modelRoutes"` // task -> role
 }
 
 // SettingsManager thread-safely manages system settings, providers, and masked credentials.
 type SettingsManager struct {
-	mu            sync.RWMutex
-	config        SettingsConfig
+	mu             sync.RWMutex
+	config         SettingsConfig
 	activeProvider llm.Provider
-	router        *llm.ModelRouter
+	router         *llm.ModelRouter
+	providers      map[string]llm.Provider
 }
 
 // NewSettingsManager initializes SettingsManager.
 func NewSettingsManager() *SettingsManager {
 	cfg := SettingsConfig{
-		ActiveProvider:    "OpenAI",
-		ThinkingModelID:   "gpt-4o",
-		CodingModelID:     "claude-3-5-sonnet-20241022",
-		FastModelID:       "gpt-4o-mini",
+		ActiveProvider: "OpenAI",
+		Thinking: llm.ModelConfig{
+			ProviderID: "Anthropic",
+			ModelID:    "claude-opus-5",
+			Role:       llm.ModelRoleThinking,
+		},
+		Coding: llm.ModelConfig{
+			ProviderID: "OpenAI",
+			ModelID:    "gpt-5.3-codex",
+			Role:       llm.ModelRoleCoding,
+		},
+		Fast: llm.ModelConfig{
+			ProviderID: "Google Gemini",
+			ModelID:    "gemini-3.5-flash-lite",
+			Role:       llm.ModelRoleFast,
+		},
+		Review: llm.ModelConfig{
+			ProviderID: "Anthropic",
+			ModelID:    "claude-sonnet-5",
+			Role:       llm.ModelRoleReview,
+		},
+		ThinkingModelID:   "claude-opus-5",
+		CodingModelID:     "gpt-5.3-codex",
+		FastModelID:       "gemini-3.5-flash-lite",
+		ReviewModelID:     "claude-sonnet-5",
 		UseSeparateModels: true,
 		Effort:            EffortMedium,
 		Mode:              ModeCode,
@@ -101,19 +127,20 @@ func NewSettingsManager() *SettingsManager {
 			"OpenAI-compatible": {BaseURL: "http://localhost:11434/v1", ModelID: "llama3.2", StorageMode: StorageStored},
 		},
 		ModelRoutes: map[string]string{
-			"planning":    "thinking",
-			"exploration": "fast",
-			"coding":      "coding",
-			"debugging":   "thinking",
-			"testing":     "coding",
-			"review":      "thinking",
+			"planning":      "thinking",
+			"exploration":   "fast",
+			"coding":        "coding",
+			"debugging":     "thinking",
+			"testing":       "coding",
+			"review":        "review",
 			"summarization": "fast",
 		},
 	}
 
 	sm := &SettingsManager{
-		config: cfg,
-		router: llm.NewModelRouter(llm.DefaultRouterConfig()),
+		config:    cfg,
+		router:    llm.NewModelRouter(llm.DefaultRouterConfig()),
+		providers: make(map[string]llm.Provider),
 	}
 	sm.initActiveProvider()
 	return sm
@@ -186,9 +213,39 @@ func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 	if updates.ActiveProvider != "" {
 		sm.config.ActiveProvider = updates.ActiveProvider
 	}
-	sm.config.ThinkingModelID = updates.ThinkingModelID
-	sm.config.CodingModelID = updates.CodingModelID
-	sm.config.FastModelID = updates.FastModelID
+
+	if updates.Thinking.ModelID != "" {
+		sm.config.Thinking = updates.Thinking
+		sm.config.ThinkingModelID = updates.Thinking.ModelID
+	} else if updates.ThinkingModelID != "" {
+		sm.config.ThinkingModelID = updates.ThinkingModelID
+		sm.config.Thinking.ModelID = updates.ThinkingModelID
+	}
+
+	if updates.Coding.ModelID != "" {
+		sm.config.Coding = updates.Coding
+		sm.config.CodingModelID = updates.Coding.ModelID
+	} else if updates.CodingModelID != "" {
+		sm.config.CodingModelID = updates.CodingModelID
+		sm.config.Coding.ModelID = updates.CodingModelID
+	}
+
+	if updates.Fast.ModelID != "" {
+		sm.config.Fast = updates.Fast
+		sm.config.FastModelID = updates.Fast.ModelID
+	} else if updates.FastModelID != "" {
+		sm.config.FastModelID = updates.FastModelID
+		sm.config.Fast.ModelID = updates.FastModelID
+	}
+
+	if updates.Review.ModelID != "" {
+		sm.config.Review = updates.Review
+		sm.config.ReviewModelID = updates.Review.ModelID
+	} else if updates.ReviewModelID != "" {
+		sm.config.ReviewModelID = updates.ReviewModelID
+		sm.config.Review.ModelID = updates.ReviewModelID
+	}
+
 	sm.config.UseSeparateModels = updates.UseSeparateModels
 	sm.config.Effort = updates.Effort
 	sm.config.Mode = updates.Mode
@@ -208,15 +265,49 @@ func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 
 // TestProvider Connection helper
 func (sm *SettingsManager) TestProvider(providerID string) (bool, string, []llm.Model) {
+	prov := sm.createProviderInstance(providerID)
+	if prov == nil {
+		return false, fmt.Sprintf("Provider %s not configured", providerID), nil
+	}
+
+	models, err := prov.ListModels(context.Background())
+	if err != nil {
+		return false, err.Error(), nil
+	}
+
+	return true, fmt.Sprintf("Successfully connected to %s (%d models available)", providerID, len(models)), models
+}
+
+// RefreshModels fetches the latest available models for a given provider or all providers.
+func (sm *SettingsManager) RefreshModels(providerID string) map[string][]llm.Model {
+	result := make(map[string][]llm.Model)
+	providers := []string{"OpenAI", "Google Gemini", "Anthropic", "OpenAI-compatible"}
+
+	if providerID != "" {
+		providers = []string{providerID}
+	}
+
+	for _, p := range providers {
+		prov := sm.createProviderInstance(p)
+		if prov != nil {
+			if models, err := prov.ListModels(context.Background()); err == nil {
+				result[p] = models
+				sm.router.RegisterModels(models)
+			}
+		}
+	}
+	return result
+}
+
+func (sm *SettingsManager) createProviderInstance(providerID string) llm.Provider {
 	sm.mu.RLock()
 	cred, exists := sm.config.Providers[providerID]
 	sm.mu.RUnlock()
 
 	if !exists {
-		return false, fmt.Sprintf("Provider %s not configured", providerID), nil
+		return nil
 	}
 
-	var prov llm.Provider
 	apiKey := cred.ApiKey
 	if apiKey == "" || cred.StorageMode == StorageEnvironment {
 		switch providerID {
@@ -231,21 +322,14 @@ func (sm *SettingsManager) TestProvider(providerID string) (bool, string, []llm.
 
 	switch providerID {
 	case "Google Gemini":
-		prov = gemini.New(apiKey)
+		return gemini.New(apiKey)
 	case "Anthropic":
-		prov = anthropic.New(apiKey, cred.BaseURL)
+		return anthropic.New(apiKey, cred.BaseURL)
 	case "OpenAI-compatible":
-		prov = compatible.New(cred.BaseURL, apiKey, cred.ModelID)
+		return compatible.New(cred.BaseURL, apiKey, cred.ModelID)
 	default:
-		prov = openai.New(apiKey, cred.BaseURL, cred.OrgID)
+		return openai.New(apiKey, cred.BaseURL, cred.OrgID)
 	}
-
-	models, err := prov.ListModels(context.Background())
-	if err != nil {
-		return false, err.Error(), nil
-	}
-
-	return true, fmt.Sprintf("Successfully connected to %s (%d models available)", providerID, len(models)), models
 }
 
 func maskKey(key string) string {
