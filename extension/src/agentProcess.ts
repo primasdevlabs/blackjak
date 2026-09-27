@@ -38,6 +38,13 @@ export class AgentProcessManager {
           env: process.env,
         });
       } else {
+        // VSIX packaging is zip-based and drops the executable bit — restore
+        // it on unix hosts before spawn.
+        if (process.platform !== 'win32') {
+          try {
+            fs.chmodSync(binaryPath, 0o755);
+          } catch (_) {}
+        }
         spawned = child_process.spawn(binaryPath, args, {
           cwd: workspacePath,
           env: process.env,

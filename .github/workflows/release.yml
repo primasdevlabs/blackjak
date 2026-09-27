@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  EXT_VERSION: ${{ github.ref_name }}
+
+jobs:
+  binaries:
+    name: Build agent binary (${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # VS Code platform/arch naming matches what agentProcess.ts resolves:
+          # bin/agent-<platform>-<arch>[.exe]
+          - { goos: windows, goarch: amd64, name: win32-x64,  ext: '.exe' }
+          - { goos: windows, goarch: arm64, name: win32-arm64, ext: '.exe' }
+          - { goos: darwin,  goarch: amd64, name: darwin-x64 }
+          - { goos: darwin,  goarch: arm64, name: darwin-arm64 }
+          - { goos: linux,   goarch: amd64, name: linux-x64 }
+          - { goos: linux,   goarch: arm64, name: linux-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -ldflags "-s -w" \
+            -o "dist/agent-${{ matrix.target.name }}${{ matrix.target.ext }}" \
+            ./cmd/agent
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target.name }}
+          path: dist/
+          if-no-files-found: error
+
+  webview:
+    name: Build webview UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install and build webview
+        working-directory: extension/webview/react
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webview-dist
+          path: extension/webview/react/dist/
+          if-no-files-found: error
+
+  package:
+    name: Package VSIX (${{ matrix.target }})
+    needs: [binaries, webview]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [win32-x64, win32-arm64, darwin-x64, darwin-arm64, linux-x64, linux-arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install extension deps and compile
+        working-directory: extension
+        run: |
+          npm ci
+          npm run compile
+
+      - name: Restore webview dist
+        uses: actions/download-artifact@v4
+        with:
+          name: webview-dist
+          path: extension/webview/react/dist
+
+      - name: Restore platform binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: extension/bin
+
+      - name: Set exec bit and package VSIX
+        working-directory: extension
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          chmod +x bin/* || true
+          # Sync extension version to the tag (v1.2.3 -> 1.2.3)
+          npm pkg set "version=${EXT_VERSION#v}"
+          npx @vscode/vsce package --allow-missing-repository -o "blackjak-${TARGET}-${EXT_VERSION#v}.vsix"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: extension/blackjak-*.vsix
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [binaries, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Bundle standalone binaries
+        run: |
+          mkdir -p release
+          cp artifacts/agent-* release/ 2>/dev/null || true
+          mv artifacts/*.vsix release/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
