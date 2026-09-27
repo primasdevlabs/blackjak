@@ -1,45 +1,29 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ChatMessage } from '../state/agentStore';
 import { Message } from './Message';
-import { PaperAirplaneIcon } from '@heroicons/react/24/outline';
 
 interface ChatProps {
   messages: ChatMessage[];
-  onSubmit: (prompt: string) => void;
   disabled?: boolean;
 }
 
-export const Chat: React.FC<ChatProps> = ({ messages, onSubmit, disabled }) => {
-  const [input, setInput] = useState('');
+export const Chat: React.FC<ChatProps> = ({ messages }) => {
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || disabled) return;
-    onSubmit(input.trim());
-    setInput('');
-  };
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   return (
-    <div className="chat-container">
-      <div className="messages-list">
-        {messages.map((msg) => (
-          <Message key={msg.id} message={msg} />
-        ))}
-      </div>
-
-      <form className="chat-input-form" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          className="chat-input"
-          placeholder="Ask the agent... (e.g. Fix the failing tests)"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={disabled}
-        />
-        <button type="submit" className="chat-submit-btn" disabled={disabled || !input.trim()}>
-          <PaperAirplaneIcon className="icon btn-icon" />
-        </button>
-      </form>
+    <div className="conversation-scroll-area">
+      {messages.length === 0 ? (
+        <div style={{ color: 'var(--text-muted)', fontSize: '13px', paddingTop: '16px' }}>
+          Describe what you'd like the agent to work on below.
+        </div>
+      ) : (
+        messages.map((msg) => <Message key={msg.id} message={msg} />)
+      )}
+      <div ref={bottomRef} />
     </div>
   );
 };

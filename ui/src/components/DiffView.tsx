@@ -1,4 +1,5 @@
 import React from 'react';
+import { XMarkIcon } from '@heroicons/react/24/outline';
 
 interface DiffViewProps {
   diffText?: string;
@@ -12,25 +13,36 @@ export const DiffView: React.FC<DiffViewProps> = ({ diffText, filePath, onClose 
   const lines = diffText.split('\n');
 
   return (
-    <div className="diff-container">
-      <div className="diff-header">
-        <span className="diff-title">Diff: {filePath || 'Modified File'}</span>
+    <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden', margin: '8px 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', borderBottom: '1px solid var(--border)', backgroundColor: 'var(--bg-elevated)' }}>
+        <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{filePath || 'Diff View'}</span>
         {onClose && (
-          <button className="diff-close-btn" onClick={onClose}>
-            ✕
+          <button style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={onClose}>
+            <XMarkIcon className="icon-sm" />
           </button>
         )}
       </div>
-      <div className="diff-content">
+
+      <div className="font-mono" style={{ fontSize: '11.5px', lineHeight: '1.5', overflowX: 'auto', padding: '6px 0' }}>
         {lines.map((line, idx) => {
-          let lineClass = 'diff-normal';
-          if (line.startsWith('+')) lineClass = 'diff-add';
-          else if (line.startsWith('-')) lineClass = 'diff-del';
+          let bg = 'transparent';
+          let color = 'var(--text-primary)';
+          let prefix = ' ';
+
+          if (line.startsWith('+')) {
+            bg = 'rgba(255, 255, 255, 0.06)';
+            color = 'var(--text-primary)';
+            prefix = '+';
+          } else if (line.startsWith('-')) {
+            bg = 'rgba(255, 255, 255, 0.04)';
+            color = 'var(--text-muted)';
+            prefix = '-';
+          }
 
           return (
-            <div key={idx} className={`diff-line ${lineClass}`}>
-              <span className="line-num">{idx + 1}</span>
-              <span className="line-text">{line}</span>
+            <div key={idx} style={{ backgroundColor: bg, color, padding: '1px 12px', display: 'flex', gap: '8px' }}>
+              <span style={{ color: 'var(--text-disabled)', width: '12px', userSelect: 'none' }}>{prefix}</span>
+              <span>{line.substring(line.startsWith('+') || line.startsWith('-') ? 1 : 0)}</span>
             </div>
           );
         })}

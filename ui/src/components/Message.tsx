@@ -8,13 +8,15 @@ interface MessageProps {
 
 export const Message: React.FC<MessageProps> = ({ message }) => {
   const isUser = message.sender === 'user';
+  const senderLabel = isUser ? 'YOU' : message.sender ? message.sender.toUpperCase() : 'ORCHESTRATOR';
 
   return (
-    <div className={`message-bubble message-${message.sender}`}>
-      <div className="message-sender">{isUser ? 'User' : 'Agent'}</div>
-      <div className="message-text">
+    <div className="message-editorial">
+      <div className="message-sender">{senderLabel}</div>
+      <div className="message-body">
         <FileReferences text={message.text} />
       </div>
+      <div className="message-divider" />
     </div>
   );
 };

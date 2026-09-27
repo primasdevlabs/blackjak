@@ -1,13 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { queueStore } from '../../state/queueStore';
-import { QueueItem } from './QueueItem';
-import { ListBulletIcon, PlusIcon } from '@heroicons/react/24/outline';
 
 export const PromptQueue: React.FC = () => {
   const [queue, setQueue] = useState(queueStore.getQueue());
-  const [showAdd, setShowAdd] = useState(false);
-  const [newPrompt, setNewPrompt] = useState('');
-  const [newMode, setNewMode] = useState<'plan' | 'code'>('code');
 
   useEffect(() => {
     const unsub = queueStore.subscribe(() => {
@@ -17,59 +12,29 @@ export const PromptQueue: React.FC = () => {
     return () => unsub();
   }, []);
 
-  const handleAdd = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newPrompt.trim()) return;
-    queueStore.addPrompt(newPrompt.trim(), newMode);
-    setNewPrompt('');
-    setShowAdd(false);
-  };
+  if (queue.length === 0) return null;
 
   return (
-    <div className="card prompt-queue-card">
-      <div className="card-header">
-        <ListBulletIcon className="icon header-icon" />
-        <span className="card-title">Prompt Queue ({queue.length})</span>
-        <button className="add-attach-btn" onClick={() => setShowAdd(!showAdd)}>
-          <PlusIcon className="icon btn-icon-sm" />
-          <span>Queue Task</span>
-        </button>
-      </div>
-
-      {showAdd && (
-        <form className="queue-input-form" onSubmit={handleAdd}>
-          <input
-            type="text"
-            className="queue-text-input"
-            placeholder="Enter task prompt to queue..."
-            value={newPrompt}
-            onChange={(e) => setNewPrompt(e.target.value)}
-          />
-          <select
-            className="select-input mode-select"
-            value={newMode}
-            onChange={(e) => setNewMode(e.target.value as any)}
-          >
-            <option value="code">Code</option>
-            <option value="plan">Plan</option>
-          </select>
-          <button type="submit" className="btn btn-approve btn-sm">Add</button>
-        </form>
-      )}
-
-      <div className="queue-items-list">
-        {queue.length === 0 ? (
-          <p className="empty-queue-msg">No tasks queued.</p>
-        ) : (
-          queue.map((item) => (
-            <QueueItem
-              key={item.id}
-              item={item}
-              onRun={(id) => queueStore.runItem(id)}
-              onDelete={(id) => queueStore.removeItem(id)}
-            />
-          ))
-        )}
+    <div style={{ margin: '12px 0' }}>
+      <div className="section-label">QUEUE</div>
+      <div className="font-mono" style={{ padding: '0 8px', fontSize: '11.5px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {queue.map((item, idx) => {
+          const numStr = String(idx + 1).padStart(2, '0');
+          return (
+            <div key={item.id} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--text-disabled)', width: '20px' }}>{numStr}</span>
+                <span style={{ color: 'var(--text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {item.prompt}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingLeft: '20px', fontSize: '10px', color: 'var(--text-muted)' }}>
+                <span>{item.status}</span>
+                <span style={{ cursor: 'pointer', color: 'var(--text-disabled)' }} onClick={() => queueStore.removeItem(item.id)}>remove</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
