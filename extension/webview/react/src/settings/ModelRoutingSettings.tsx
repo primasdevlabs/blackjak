@@ -25,8 +25,8 @@ export const ModelRoutingSettings: React.FC<ModelRoutingSettingsProps> = ({
     <div className="card routing-settings-card">
       <div className="card-header">
         <span className="card-title">Model routing</span>
-        <button className="btn btn-sm btn-deny reset-btn" onClick={onResetDefaults}>
-          Reset Defaults
+        <button type="button" className="btn btn-sm btn-secondary reset-btn" onClick={onResetDefaults}>
+          Reset defaults
         </button>
       </div>
 

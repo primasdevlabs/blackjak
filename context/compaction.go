@@ -1,6 +1,7 @@
 package context
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -30,9 +31,10 @@ type CompactedContext struct {
 	PendingWork     []string    `json:"pendingWork"`
 	References      []string    `json:"references"`
 
-	TokensBefore int `json:"tokensBefore"`
-	TokensAfter  int `json:"tokensAfter"`
-	TokensSaved  int `json:"tokensSaved"`
+	TokensBefore int    `json:"tokensBefore"`
+	TokensAfter  int    `json:"tokensAfter"`
+	TokensSaved  int    `json:"tokensSaved"`
+	Summary      string `json:"summary"`
 }
 
 type Compactor struct {
@@ -82,30 +84,118 @@ func (c *Compactor) ShouldCompact(budget ContextBudget) bool {
 	return budget.Pressure >= 0.80
 }
 
+// Compact builds a structured summary from objective + raw conversation text.
+// Prefer LLM summarization in the agent loop; this is the deterministic fallback.
 func (c *Compactor) Compact(objective string, rawContent string) CompactedContext {
 	beforeTokens := estimateTokens(objective + rawContent)
 
-	structured := CompactedContext{
+	files := extractFileStates(rawContent)
+	findings := extractLines(rawContent, []string{"found", "identified", "note:"}, 8)
+	errors := extractLines(rawContent, []string{"error", "failed", "panic"}, 6)
+	tests := extractLines(rawContent, []string{"test", "PASS", "FAIL"}, 6)
+	decisions := extractLines(rawContent, []string{"decided", "will use", "chose"}, 6)
+	pending := extractLines(rawContent, []string{"TODO", "next", "remaining"}, 6)
+
+	summary := strings.TrimSpace(objective)
+	if summary == "" {
+		summary = "Continue the current engineering task."
+	}
+	if len(findings) > 0 {
+		summary += "\nKey findings: " + strings.Join(clamp(findings, 3), "; ")
+	}
+	if len(files) > 0 {
+		var paths []string
+		for _, f := range clampFiles(files, 8) {
+			paths = append(paths, f.Path)
+		}
+		summary += "\nTouched files: " + strings.Join(paths, ", ")
+	}
+
+	afterTokens := estimateTokens(summary)
+	if afterTokens > beforeTokens {
+		afterTokens = int(float64(beforeTokens) * 0.4)
+	}
+
+	return CompactedContext{
 		Objective:    objective,
-		Constraints:  []string{"Preserve clean architecture", "Verify test suite before completing"},
-		Decisions:    []string{"Identified validation entry points", "Selected structured compaction strategy"},
-		Plan:         []string{"Verify implementation", "Run regression tests"},
-		Files:        []FileState{{Path: "internal/auth/token.go", Status: "M"}, {Path: "internal/auth/middleware.go", Status: "M"}},
-		Findings:     []string{"Token expiration check located in token.go:42"},
-		Tests:        []string{"Auth middleware tests passing"},
+		Constraints:  []string{"Preserve working behavior", "Follow existing project conventions"},
+		Decisions:    clamp(decisions, 8),
+		Plan:         []string{"Resume from compacted state", "Finish remaining work", "Verify"},
+		Files:        clampFiles(files, 12),
+		Findings:     clamp(findings, 10),
+		Tests:        clamp(tests, 8),
+		Errors:       clamp(errors, 8),
+		PendingWork:  clamp(pending, 8),
 		TokensBefore: beforeTokens,
+		TokensAfter:  afterTokens,
+		TokensSaved:  beforeTokens - afterTokens,
+		Summary:      summary,
 	}
-
-	afterTokens := int(float64(beforeTokens) * 0.35)
-	if afterTokens < 2000 {
-		afterTokens = 2000
-	}
-	structured.TokensAfter = afterTokens
-	structured.TokensSaved = beforeTokens - afterTokens
-
-	return structured
 }
 
 func estimateTokens(s string) int {
-	return len(strings.Fields(s)) * 2
+	if s == "" {
+		return 0
+	}
+	// Rough chars/4 heuristic used elsewhere in the codebase.
+	n := len(s) / 4
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+var pathRe = regexp.MustCompile(`(?i)(?:[\w./\\-]+\.(?:go|ts|tsx|js|jsx|py|md|json|css|html|yml|yaml|toml|rs|java|kt))`)
+
+func extractFileStates(raw string) []FileState {
+	seen := map[string]bool{}
+	var out []FileState
+	for _, m := range pathRe.FindAllString(raw, 40) {
+		p := filepathToSlash(m)
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, FileState{Path: p, Status: "M"})
+	}
+	return out
+}
+
+func filepathToSlash(p string) string {
+	return strings.ReplaceAll(p, "\\", "/")
+}
+
+func extractLines(raw string, keywords []string, limit int) []string {
+	var out []string
+	for _, line := range strings.Split(raw, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" || len(l) > 240 {
+			continue
+		}
+		low := strings.ToLower(l)
+		for _, kw := range keywords {
+			if strings.Contains(low, strings.ToLower(kw)) {
+				out = append(out, l)
+				break
+			}
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func clamp(in []string, n int) []string {
+	if len(in) <= n {
+		return in
+	}
+	return in[:n]
+}
+
+func clampFiles(in []FileState, n int) []FileState {
+	if len(in) <= n {
+		return in
+	}
+	return in[:n]
 }

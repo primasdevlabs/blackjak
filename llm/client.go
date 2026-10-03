@@ -15,12 +15,24 @@ type CompletionRequest struct {
 	Messages  []Message
 	Tools     []Tool
 	MaxTokens int
+	// EnablePromptCache asks providers that support it to mark system/prefix
+	// content as cacheable (Anthropic cache_control, etc.).
+	EnablePromptCache bool
+}
+
+// CacheStats reports prompt-cache usage for a completion.
+type CacheStats struct {
+	CacheReadTokens  int64 `json:"cacheReadTokens"`
+	CacheWriteTokens int64 `json:"cacheWriteTokens"`
+	InputTokens      int64 `json:"inputTokens"`
+	OutputTokens     int64 `json:"outputTokens"`
 }
 
 // CompletionResponse holds output returned by the LLM.
 type CompletionResponse struct {
 	Content   string
 	ToolCalls []ToolCall
+	Cache     CacheStats
 }
 
 // ToolCall represents a requested function execution from the LLM.

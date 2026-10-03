@@ -105,6 +105,19 @@ export class WebviewBridge {
           terminal.sendText(payload.command, true);
           break;
         }
+        case 'pickFiles':
+          result = { paths: await this.host.pickFiles(payload) };
+          break;
+        case 'openSettingsWindow':
+          await this.host.openSettingsWindow();
+          break;
+        case 'openActivityPanel':
+          await this.host.openActivityPanel();
+          break;
+        case 'closePanel':
+          // Dedicated settings/activity panels close via dispose of the active tab.
+          await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+          break;
         default:
           this.outputChannel.appendLine(`[WebviewBridge] Unknown command: ${command}`);
       }

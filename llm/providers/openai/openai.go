@@ -55,7 +55,7 @@ func (p *OpenAIProvider) Ping(ctx context.Context) error {
 		req.Header.Set("OpenAI-Organization", p.orgID)
 	}
 
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := llm.NewHTTPClient(8 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("connection failed: %w", err)
@@ -86,7 +86,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]llm.Model, error) {
 		req.Header.Set("OpenAI-Organization", p.orgID)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := llm.NewHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return catalog, nil

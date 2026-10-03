@@ -34,6 +34,7 @@ const (
 	EventAgentMessage  EventType = "agent.message"
 	EventAgentThinking EventType = "agent.thinking"
 	EventAgentPlan     EventType = "agent.plan"
+	EventAgentPhase    EventType = "agent.phase"
 
 	// Tool execution events
 	EventToolStarted   EventType = "tool.started"
@@ -78,8 +79,10 @@ const (
 	EventApprovalDenied    EventType = "approval.denied"
 
 	// Context & Memory update events
-	EventContextUpdated EventType = "context.updated"
-	EventMemoryUpdated  EventType = "memory.updated"
+	EventContextUpdated   EventType = "context.updated"
+	EventContextCompacted EventType = "context.compacted"
+	EventMemoryUpdated    EventType = "memory.updated"
+	EventCacheStats       EventType = "cache.stats"
 )
 
 // Event represents a structured, timestamped event in the agent lifecycle.

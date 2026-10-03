@@ -2,6 +2,9 @@ import { apiClient } from './client';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'extra_high';
 export type ModelRole = 'thinking' | 'coding' | 'fast' | 'review';
+export type AgentMode = 'ask' | 'plan' | 'agent' | 'code';
+/** standard = refuse certain asks; accept_all = security-research / red-team mode */
+export type AskPolicy = 'standard' | 'accept_all';
 
 export interface ModelConfig {
   providerId: string;
@@ -40,15 +43,23 @@ export interface SettingsConfig {
   reviewModelId?: string;
   useSeparateModels: boolean;
   effort: EffortLevel;
-  mode: 'plan' | 'code';
+  mode: AgentMode;
   parallelSubagents: boolean;
   maxSubagents: number;
   promptQueueBehavior: 'sequential' | 'parallel' | 'ask';
   autoOpenFile: boolean;
   autoOpenDiff: boolean;
   askDestructiveOps: boolean;
+  askPolicy?: AskPolicy;
   modelRoutes: Record<string, string>;
   guardrails: GuardrailsConfig;
+  // UI / product prefs (Phase 2+)
+  compactChatDefault?: boolean;
+  themeDensity?: 'comfortable' | 'compact';
+  tabAutoOpenLimit?: number;
+  betaFlags?: Record<string, boolean>;
+  proxyUrl?: string;
+  networkAllowlist?: string[];
 }
 
 export interface Model {
@@ -70,10 +81,15 @@ export interface QueuedPrompt {
   id: string;
   runId?: string;
   prompt: string;
-  mode: 'plan' | 'code';
+  mode: AgentMode;
   createdAt: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused';
   dependencies?: string[];
+}
+
+export function normalizeMode(mode: AgentMode | string): 'ask' | 'plan' | 'agent' {
+  if (mode === 'ask' || mode === 'plan') return mode;
+  return 'agent'; // code → agent
 }
 
 export class AgentSettingsApi {
@@ -121,7 +137,7 @@ export class AgentSettingsApi {
     return json.data;
   }
 
-  async addToQueue(prompt: string, mode: 'plan' | 'code' = 'code', dependencies?: string[]): Promise<QueuedPrompt> {
+  async addToQueue(prompt: string, mode: AgentMode = 'agent', dependencies?: string[]): Promise<QueuedPrompt> {
     const res = await fetch(`${apiClient.getBaseUrl()}/api/queue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -6,13 +6,19 @@ export function useAgent(): AgentState & {
   cancelTask: () => void;
   respondApproval: (granted: boolean, reason?: string) => void;
   configureBackend: (backendUrl: string, wsUrl: string) => void;
-  addAttachment: (path: string, type?: 'file' | 'folder') => void;
+  addAttachment: (
+    path: string,
+    type?: 'file' | 'folder' | 'image',
+    extras?: { previewUrl?: string; mime?: string; name?: string }
+  ) => void;
   removeAttachment: (id: string) => void;
   selectSubagent: (id: string | null) => void;
   addSystemMessage: (text: string) => void;
   createSession: () => void;
   switchSession: (id: string) => void;
   closeSession: (id: string) => void;
+  renameSession: (id: string, title: string) => void;
+  reorderSessions: (fromId: string, toId: string) => void;
   refreshRuns: () => void;
   loadRunFromHistory: (runId: string) => void;
   deleteRunFromHistory: (runId: string) => void;
@@ -35,13 +41,15 @@ export function useAgent(): AgentState & {
     cancelTask: () => agentStore.cancelTask(),
     respondApproval: (granted, reason) => agentStore.respondApproval(granted, reason),
     configureBackend: (bUrl, wUrl) => agentStore.configureBackend(bUrl, wUrl),
-    addAttachment: (path, type) => agentStore.addAttachment(path, type),
+    addAttachment: (path, type, extras) => agentStore.addAttachment(path, type, extras),
     removeAttachment: (id) => agentStore.removeAttachment(id),
     selectSubagent: (id) => agentStore.selectSubagent(id),
     addSystemMessage: (text) => agentStore.addSystemMessage(text),
     createSession: () => agentStore.createSession(),
     switchSession: (id) => agentStore.switchSession(id),
     closeSession: (id) => agentStore.closeSession(id),
+    renameSession: (id, title) => agentStore.renameSession(id, title),
+    reorderSessions: (fromId, toId) => agentStore.reorderSessions(fromId, toId),
     refreshRuns: () => { void agentStore.refreshRuns(); },
     loadRunFromHistory: (runId) => { void agentStore.loadRunFromHistory(runId); },
     deleteRunFromHistory: (runId) => { void agentStore.deleteRunFromHistory(runId); },

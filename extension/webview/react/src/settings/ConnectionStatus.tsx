@@ -58,8 +58,13 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
             {providerStatus === 'disconnected' && <XCircleIcon className="icon icon-error" />}
             <span style={{ textTransform: 'capitalize' }}>{providerStatus}</span>
           </span>
-          <button className="btn btn-sm btn-approve" onClick={onTestProvider} disabled={providerStatus === 'testing'}>
-            Test
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={onTestProvider}
+            disabled={providerStatus === 'testing'}
+          >
+            {providerStatus === 'testing' ? 'Testing…' : 'Test connection'}
           </button>
         </div>
       </div>

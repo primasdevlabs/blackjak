@@ -49,7 +49,14 @@ func DefaultPolicy() Policy {
 		},
 		ProtectedPaths: []string{
 			".git", ".env", ".env.*", "*.pem", "*.key", "id_rsa*",
-			"*.pfx", "*.p12", ".blackjak",
+			"*.pfx", "*.p12",
+			// Protect BlackJak state/secrets, but allow rules/skills edits.
+			".blackjak/settings.json",
+			".blackjak/runs",
+			".blackjak/memory.json",
+			".blackjak/user-rules.json",
+			".blackjak/rule-prefs.json",
+			".blackjak/settings.json.tmp",
 		},
 		SubagentsAllowed: true,
 		MaxSubagents:     4,
@@ -151,12 +158,66 @@ func (p Policy) CheckWrite(relPath string) error {
 		return fmt.Errorf("file writes are disabled by read-only mode")
 	}
 	rel := strings.TrimPrefix(filepathToSlash(relPath), "./")
+	// Project rules/skills are intentionally editable by the agent.
+	if isBlackjakEditablePath(rel) {
+		return nil
+	}
 	for _, pattern := range p.ProtectedPaths {
 		if matchProtectedPath(pattern, rel) {
 			return fmt.Errorf("%q is a protected path", rel)
 		}
 	}
 	return nil
+}
+
+// isBlackjakEditablePath allows writes under rules/skills packs.
+func isBlackjakEditablePath(rel string) bool {
+	rel = strings.TrimPrefix(rel, "./")
+	return strings.HasPrefix(rel, ".blackjak/rules/") ||
+		strings.HasPrefix(rel, ".blackjak/skills/") ||
+		rel == ".blackjak/rules" ||
+		rel == ".blackjak/skills"
+}
+
+// secretReadPatterns are always denied for filesystem reads (credential exfil).
+var secretReadPatterns = []string{
+	".env", ".env.*", "*.pem", "*.key", "id_rsa*", "*.pfx", "*.p12",
+	"*.keystore", "*.jks", "credentials.json", "service-account*.json",
+}
+
+// CheckRead validates a read against secret-protection rules.
+// ProtectedPaths that are directories (e.g. .git, .blackjak) remain readable for
+// inspection; credential-like globs are hard-blocked.
+func (p Policy) CheckRead(relPath string) error {
+	rel := strings.TrimPrefix(filepathToSlash(relPath), "./")
+	for _, pattern := range secretReadPatterns {
+		if matchProtectedPath(pattern, rel) {
+			return fmt.Errorf("%q is a protected secret path (read denied)", rel)
+		}
+	}
+	// Also honor explicit credential-like entries in ProtectedPaths.
+	for _, pattern := range p.ProtectedPaths {
+		patt := strings.TrimSpace(pattern)
+		if patt == ".git" || patt == ".blackjak" || strings.HasPrefix(patt, ".blackjak/") {
+			continue
+		}
+		if matchProtectedPath(patt, rel) && looksLikeSecretPattern(patt) {
+			return fmt.Errorf("%q is a protected secret path (read denied)", rel)
+		}
+	}
+	return nil
+}
+
+func looksLikeSecretPattern(pattern string) bool {
+	lower := strings.ToLower(pattern)
+	return strings.Contains(lower, ".env") ||
+		strings.Contains(lower, ".pem") ||
+		strings.Contains(lower, ".key") ||
+		strings.Contains(lower, "id_rsa") ||
+		strings.Contains(lower, ".pfx") ||
+		strings.Contains(lower, ".p12") ||
+		strings.Contains(lower, "credential") ||
+		strings.Contains(lower, "secret")
 }
 
 // matchProtectedPath matches a protected pattern against a workspace-relative

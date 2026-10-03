@@ -6,6 +6,9 @@ function createAgentHost(): AgentHost {
   // The extension injects window.vscode (acquireVsCodeApi) before the bundle
   // loads. Any VS Code-family host (Code, Cursor, Windsurf, VSCodium, Theia)
   // supplies the same global, so this single check is sufficient.
+  if (typeof window === 'undefined') {
+    return new BrowserAgentHost();
+  }
   const w = window as any;
   if (typeof w.vscode !== 'undefined' && typeof w.vscode.postMessage === 'function') {
     return new WebviewAgentHost(w.vscode);

@@ -60,6 +60,13 @@ type openAIChatResponse struct {
 	Choices []struct {
 		Message openAIMessage `json:"message"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens             int64 `json:"prompt_tokens"`
+		CompletionTokens         int64 `json:"completion_tokens"`
+		PromptTokensDetails      *struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -137,7 +144,7 @@ func CompleteChatCompletion(ctx context.Context, cfg ChatCompletionConfig, req *
 		httpReq.Header.Set("OpenAI-Organization", cfg.OrgID)
 	}
 
-	resp, err := (&http.Client{Timeout: cfg.Timeout}).Do(httpReq)
+	resp, err := NewHTTPClient(cfg.Timeout).Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("chat completion request failed: %w", err)
 	}
@@ -169,6 +176,17 @@ func CompleteChatCompletion(ctx context.Context, cfg ChatCompletionConfig, req *
 			Name:      tc.Function.Name,
 			Arguments: tc.Function.Arguments,
 		})
+	}
+	if parsed.Usage != nil {
+		cached := int64(0)
+		if parsed.Usage.PromptTokensDetails != nil {
+			cached = parsed.Usage.PromptTokensDetails.CachedTokens
+		}
+		result.Cache = CacheStats{
+			InputTokens:     parsed.Usage.PromptTokens,
+			OutputTokens:    parsed.Usage.CompletionTokens,
+			CacheReadTokens: cached,
+		}
 	}
 	return result, nil
 }

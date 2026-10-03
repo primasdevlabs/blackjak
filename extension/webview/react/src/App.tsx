@@ -8,7 +8,7 @@ import { apiClient } from './api/client';
 import { resolveAgentEndpoint } from './api/endpoint';
 import { LiveActivity } from './components/LiveActivity';
 import { ChangeTracker } from './components/ChangeTracker';
-import { CompletionCard } from './components/CompletionCard';
+import { CompletionCard, completionIsMeaningful } from './components/CompletionCard';
 import { AgentResult } from './components/AgentResult';
 import { Plan } from './components/Plan';
 import { Approval } from './components/Approval';
@@ -23,24 +23,30 @@ import { TaskSummaryCard, TaskSummaryData } from './components/TaskSummaryCard';
 import { DropZone } from './components/DropZone';
 import { ReferenceChipList } from './components/ReferenceChip';
 import { WorkspaceReference } from './types/events';
+import { ComposerBar, modeFromSettings, AgentModeUI } from './components/ComposerBar';
+import { ActivityPanel } from './components/activity-panel';
+import { ActivityStream } from './components/ActivityStream';
+import { PlanCreatedCard } from './components/PlanCreatedCard';
+import { ImageLightbox } from './components/ImageLightbox';
+import { AgentTimeline } from './components/AgentTimeline';
+import { AgentTree } from './components/AgentTree';
+import { StatusBar } from './components/StatusBar';
+import { FilesReviewBar } from './components/FilesReviewBar';
+import { EngineeringPhaseStrip, ReviewCard } from './components/EngineeringPhase';
+import { normalizeMode } from './api/settings';
+import { takePreview, workspacePreviewUrl, isImageName } from './utils/attachmentPreview';
 import {
   Cog6ToothIcon,
   PlusIcon,
-  StopIcon,
-  ArrowUpIcon,
   XMarkIcon,
   SparklesIcon,
   ArrowTopRightOnSquareIcon,
   UserGroupIcon,
-  ShieldCheckIcon,
-  CpuChipIcon,
   ComputerDesktopIcon,
   FolderIcon,
-  PaperClipIcon,
   CommandLineIcon,
   ArrowsPointingInIcon,
   ChartBarIcon,
-  DocumentTextIcon,
   ChatBubbleLeftIcon,
   ClockIcon,
   TrashIcon,
@@ -51,6 +57,7 @@ import {
   DocumentDuplicateIcon,
   PauseIcon,
   PlayIcon,
+  StopIcon,
 } from '@heroicons/react/24/outline';
 import './App.css';
 
@@ -82,6 +89,7 @@ export const App: React.FC = () => {
     filesRead,
     thought,
     completion,
+    engineering,
     workspaceRoot,
     startTask,
     cancelTask,
@@ -95,6 +103,8 @@ export const App: React.FC = () => {
     createSession,
     switchSession,
     closeSession,
+    renameSession,
+    reorderSessions,
     runs,
     refreshRuns,
     loadRunFromHistory,
@@ -106,14 +116,21 @@ export const App: React.FC = () => {
 
   const [settings, setSettings] = useState(settingsStore.getSettings());
   const [showSettings, setShowSettings] = useState(false);
+  const [showActivity, setShowActivity] = useState(false);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [showReviewChanges, setShowReviewChanges] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [selPopup, setSelPopup] = useState<{ text: string; x: number; y: number } | null>(null);
   const [showAgentsOverlay, setShowAgentsOverlay] = useState(false);
-  const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [composerInput, setComposerInput] = useState('');
   const [composerRefs, setComposerRefs] = useState<WorkspaceReference[]>([]);
+  const [compactChat, setCompactChat] = useState(!!settingsStore.getSettings().compactChatDefault);
+  const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
 
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [showCompactionModal, setShowCompactionModal] = useState(false);
@@ -134,8 +151,31 @@ export const App: React.FC = () => {
   const [taskSummary, setTaskSummary] = useState<TaskSummaryData | null>(null);
   const [compactionEventNotice, setCompactionEventNotice] = useState<{ before: string; after: string } | null>(null);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sessionRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const openSettings = () => setShowSettings(true);
+    const openActivity = () => setShowActivity(true);
+    window.addEventListener('blackjak:open-settings', openSettings);
+    window.addEventListener('blackjak:open-activity', openActivity);
+    const onMsg = (event: MessageEvent) => {
+      const data = event.data;
+      if (data?.type === 'ui.openSettings') setShowSettings(true);
+      if (data?.type === 'ui.openActivity') setShowActivity(true);
+      if (data?.type === 'cache.stats' || data?.type === 'EventCacheStats') {
+        const d = data.data || data;
+        const read = Number(d.cacheReadTokens || 0);
+        const write = Number(d.cacheWriteTokens || 0);
+        if (read + write > 0) setCacheHitRate(read / (read + write));
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => {
+      window.removeEventListener('blackjak:open-settings', openSettings);
+      window.removeEventListener('blackjak:open-activity', openActivity);
+      window.removeEventListener('message', onMsg);
+    };
+  }, []);
 
   // Text selection in the session stream → floating Quote/Copy popup.
   const handleSessionMouseUp = () => {
@@ -160,7 +200,6 @@ export const App: React.FC = () => {
     setComposerInput((prev) => (prev.trim() ? `${prev}\n\n${quote}\n` : `${quote}\n`));
     setSelPopup(null);
     window.getSelection()?.removeAllRanges();
-    textareaRef.current?.focus();
   };
 
   const copySelection = () => {
@@ -256,13 +295,18 @@ export const App: React.FC = () => {
           settingsStore.updateSettings({ mode: 'plan' });
           agentStore.addSystemMessage('Switched to plan mode.');
         }
-      } else if (cleanCmd === 'code') {
-        settingsStore.updateSettings({ mode: 'code' });
-        agentStore.addSystemMessage('Switched to code mode.');
+      } else if (cleanCmd === 'code' || cleanCmd === 'agent') {
+        settingsStore.updateSettings({ mode: 'agent' });
+        agentStore.addSystemMessage('Switched to agent mode.');
+      } else if (cleanCmd === 'ask') {
+        settingsStore.updateSettings({ mode: 'ask' });
+        agentStore.addSystemMessage('Switched to ask mode.');
       } else if (cleanCmd === 'model') {
         setShowSettings(true);
       } else if (cleanCmd === 'effort') {
-        setShowEffortPicker(true);
+        /* model menu in composer */
+      } else if (cleanCmd === 'activity') {
+        setShowActivity(true);
       } else if (cleanCmd === 'agents') {
         setShowAgentsOverlay(true);
       } else if (cleanCmd === 'queue') {
@@ -280,12 +324,22 @@ export const App: React.FC = () => {
             : 'No file changes in the current run.'
         );
       } else if (cleanCmd === 'files') {
-        const data = await runBackendCommand('files');
-        const refs = [...(data?.references || []), ...(data?.attachments || [])];
+        try {
+          const { agentHost } = await import('./host');
+          const paths = await agentHost.pickFiles({ canSelectMany: true, title: 'Attach files' });
+          paths.forEach((p) => addAttachment(p));
+          if (!paths.length) {
+            agentStore.addSystemMessage('No files selected.');
+          }
+        } catch {
+          agentStore.addSystemMessage('File picker unavailable — use the paperclip button.');
+        }
+      } else if (cleanCmd === 'pr') {
+        const data = await runBackendCommand('pr');
         agentStore.addSystemMessage(
-          refs.length
-            ? `Context files:\n${refs.map((f: any) => `- ${f.path}`).join('\n')}`
-            : 'No files attached to the current run.'
+          data?.body
+            ? `PR draft: ${data.title}\n\n${data.body}`
+            : 'Could not build PR summary.'
         );
       } else if (cleanCmd === 'undo') {
         const data = await runBackendCommand('undo');
@@ -294,7 +348,9 @@ export const App: React.FC = () => {
         await runBackendCommand('stop').catch(() => cancelTask());
         cancelTask();
       } else {
-        agentStore.addSystemMessage(`Unknown command: /${cleanCmd}`);
+        // Treat unknown slash tokens as skill invocations.
+        startTask(`/${cleanCmd}`);
+        agentStore.addSystemMessage(`Invoked skill /${cleanCmd}`);
       }
     } catch (e: any) {
       agentStore.addSystemMessage(`/${cleanCmd} failed: ${e.message}`);
@@ -335,8 +391,7 @@ export const App: React.FC = () => {
     setComposerRefs((prev) => prev.filter((r) => r.raw !== raw));
   };
 
-  const handleComposerInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
+  const handleComposerInputChange = (val: string) => {
     setComposerInput(val);
     setComposerRefs(parseReferencesFromText(val));
     if (val.startsWith('/')) {
@@ -355,10 +410,15 @@ export const App: React.FC = () => {
       setShowSlashMenu(false);
       return;
     }
+    const mode = normalizeMode(settings.mode);
     if (activeRunStatus === 'running' || activeRunStatus === 'waiting' || activeRunStatus === 'pending') {
-      queueStore.addPrompt(text, settings.mode);
-    } else if (activeRunStatus === 'paused' || activeRunStatus === 'cancelled') {
-      // Resume from checkpoint with the new instruction appended to context.
+      queueStore.addPrompt(text, mode);
+    } else if (
+      activeRunStatus === 'paused' ||
+      activeRunStatus === 'cancelled' ||
+      activeRunStatus === 'failed'
+    ) {
+      // Continue checkpointed context (failed/paused/cancelled) instead of a fresh run.
       resumeTask(text);
     } else {
       startTask(text);
@@ -367,51 +427,92 @@ export const App: React.FC = () => {
     setShowSlashMenu(false);
   };
 
-  const handleKeyDownTextarea = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleComposerSubmit();
-    }
-  };
-
   const selectedSubagentObj = subagents.find((s) => s.id === selectedSubagentId) || null;
   const isWorking = activeRunStatus === 'running' || activeRunStatus === 'waiting' || activeRunStatus === 'pending';
   const modelLabel = (settings.coding?.modelId || settings.codingModelId || 'Model').replace(/^claude-/, 'Claude ').replace(/^gpt-/, 'GPT-');
   const workspaceName = workspaceRoot ? workspaceRoot.split(/[/\\]/).filter(Boolean).pop() : '';
+  const composerMode = modeFromSettings(settings);
+  const modelOptions = [
+    { id: settings.codingModelId || settings.coding?.modelId || 'coding', label: modelLabel, role: 'coding' },
+    { id: settings.thinkingModelId || settings.thinking?.modelId || 'thinking', label: (settings.thinkingModelId || 'Thinking').replace(/^claude-/, 'Claude '), role: 'thinking' },
+    { id: settings.fastModelId || settings.fast?.modelId || 'fast', label: (settings.fastModelId || 'Fast').replace(/^gemini-/, 'Gemini '), role: 'fast' },
+    { id: settings.reviewModelId || settings.review?.modelId || 'review', label: (settings.reviewModelId || 'Review').replace(/^claude-/, 'Claude '), role: 'review' },
+  ];
 
   const paletteCommands: CommandOption[] = [
-    { id: 'new-task', label: 'New task', shortcut: 'Enter', action: () => textareaRef.current?.focus() },
+    { id: 'new-task', label: 'New task', shortcut: 'Enter', action: () => undefined },
+    { id: 'agent-mode', label: 'Agent mode', action: () => settingsStore.updateSettings({ mode: 'agent' }) },
     { id: 'plan-mode', label: 'Plan mode', action: () => settingsStore.updateSettings({ mode: 'plan' }) },
-    { id: 'code-mode', label: 'Code mode', action: () => settingsStore.updateSettings({ mode: 'code' }) },
+    { id: 'ask-mode', label: 'Ask mode', action: () => settingsStore.updateSettings({ mode: 'ask' }) },
     { id: 'effort-low', label: 'Effort: Low', action: () => settingsStore.updateSettings({ effort: 'low' }) },
     { id: 'effort-medium', label: 'Effort: Medium', action: () => settingsStore.updateSettings({ effort: 'medium' }) },
     { id: 'effort-high', label: 'Effort: High', action: () => settingsStore.updateSettings({ effort: 'high' }) },
     { id: 'effort-extra', label: 'Effort: Max', action: () => settingsStore.updateSettings({ effort: 'extra_high' }) },
     { id: 'open-settings', label: 'Settings', action: () => setShowSettings(true) },
+    { id: 'open-activity', label: 'Activity log', action: () => setShowActivity(true) },
     { id: 'cancel-task', label: 'Stop task', action: () => cancelTask() },
   ];
 
   return (
     <DropZone onFileDrop={(path, type) => addAttachment(path, type)}>
     <div className="app-sidebar-container">
+      <EngineeringPhaseStrip engineering={engineering} />
+
       {/* Session tabs — one conversation per tab, IDE-style */}
       <div className="session-tabstrip">
         <div className="session-tabs">
           {sessions.map((s) => (
             <div
               key={s.id}
-              className={`session-tab ${s.id === activeSessionId ? 'active' : ''}`}
+              className={`session-tab ${s.id === activeSessionId ? 'active' : ''} ${s.dirty ? 'dirty' : ''}`}
               onClick={() => switchSession(s.id)}
-              title={s.title}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setEditingTabId(s.id);
+                setEditingTitle(s.title);
+              }}
+              draggable
+              onDragStart={() => setDragTabId(s.id)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => {
+                if (dragTabId) reorderSessions(dragTabId, s.id);
+                setDragTabId(null);
+              }}
+              title={`${s.title}${s.dirty ? ' • unsaved activity' : ''} (double-click to rename, drag to reorder)`}
             >
+              <ChatBubbleLeftIcon className="session-tab-icon" aria-hidden />
               {(s.runStatus === 'running' || s.runStatus === 'pending') ? (
                 <span className="session-tab-dot running" />
               ) : s.runStatus === 'waiting' ? (
                 <span className="session-tab-dot waiting" />
               ) : s.runStatus === 'failed' ? (
                 <span className="session-tab-dot failed" />
+              ) : s.dirty ? (
+                <span className="session-tab-dot dirty" />
               ) : null}
-              <span className="session-tab-title">{s.title}</span>
+              {editingTabId === s.id ? (
+                <input
+                  className="session-tab-rename"
+                  value={editingTitle}
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => setEditingTitle(e.target.value)}
+                  onBlur={() => {
+                    renameSession(s.id, editingTitle);
+                    setEditingTabId(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      renameSession(s.id, editingTitle);
+                      setEditingTabId(null);
+                    } else if (e.key === 'Escape') {
+                      setEditingTabId(null);
+                    }
+                  }}
+                />
+              ) : (
+                <span className="session-tab-title">{s.title}</span>
+              )}
               {sessions.length > 1 && (
                 <button
                   className="session-tab-close"
@@ -510,7 +611,13 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          <Chat messages={messages} disabled={status === 'disconnected'} />
+          <Chat messages={messages} disabled={status === 'disconnected'} compact={compactChat} />
+          <AgentTree
+            subagents={subagents}
+            selectedId={selectedSubagentId}
+            onSelect={selectSubagent}
+          />
+          {subagents.length > 0 && <AgentTimeline subagents={subagents} />}
 
           {compactionEventNotice && (
             <div
@@ -542,16 +649,46 @@ export const App: React.FC = () => {
 
           {taskSummary && <TaskSummaryCard summary={taskSummary} />}
 
-          <Plan plan={plan} />
+          {plan && plan.steps?.length > 0 && composerMode === 'plan' && !isWorking && (
+            <PlanCreatedCard
+              title={sessions.find((s) => s.id === activeSessionId)?.title || 'BlackJak Plan'}
+              plan={plan}
+              onBuild={() => {
+                settingsStore.updateSettings({ mode: 'agent' });
+                startTask('Build the plan we just created. Execute the steps.');
+              }}
+            />
+          )}
+          {plan && plan.steps?.length > 0 && (isWorking || composerMode !== 'plan') && (
+            <Plan
+              plan={plan}
+              title={sessions.find((s) => s.id === activeSessionId)?.title || 'Implementation plan'}
+              modeLabel={composerMode === 'ask' ? 'Ask' : 'Build'}
+            />
+          )}
 
-          <LiveActivity
-            status={activeRunStatus}
-            tools={toolExecutions}
-            filesRead={filesRead}
-            thought={thought}
-          />
+          {(isWorking || toolExecutions.length > 0 || filesRead.length > 0) && (
+            <LiveActivity
+              status={activeRunStatus}
+              tools={toolExecutions}
+              filesRead={filesRead}
+              thought={thought}
+            />
+          )}
 
-          <ChangeTracker changes={fileChanges} subagents={subagents} />
+          {(isWorking || fileChanges.length > 0 || toolExecutions.some((t) => !!t.output)) && (
+            <ActivityStream
+              tools={toolExecutions}
+              fileChanges={fileChanges}
+              filesRead={filesRead}
+              isWorking={isWorking}
+            />
+          )}
+
+          {(showReviewChanges || fileChanges.some((c) => !c.status || c.status === 'pending')) &&
+            fileChanges.length > 0 && (
+            <ChangeTracker changes={fileChanges} subagents={subagents} />
+          )}
 
           {activeRunStatus === 'paused' && (
             <div className="retry-bar">
@@ -590,9 +727,22 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {completion && activeRunStatus === 'completed' && (
-            <CompletionCard completion={completion} />
+          {engineering?.review && (
+            <ReviewCard review={engineering.review} />
           )}
+
+          {(() => {
+            const lastAgent = [...messages].reverse().find((m) => m.sender === 'agent')?.text;
+            if (
+              !completion ||
+              activeRunStatus !== 'completed' ||
+              !completionIsMeaningful(completion, lastAgent)
+            ) {
+              return null;
+            }
+            const hideResult = !!lastAgent && (completion.result || '').trim() === lastAgent.trim();
+            return <CompletionCard completion={completion} hideResult={hideResult} />;
+          })()}
 
           <PromptQueue />
         </section>
@@ -614,174 +764,107 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      {/* Composer */}
+      {/* Working / Stop + Files / Review sit just above the composer */}
       <div className="composer-container" style={{ position: 'relative' }}>
-        {showSlashMenu && (
-          <SlashCommandMenu
-            query={composerInput}
-            onSelect={(cmd) => {
-              executeSlashCommand(cmd.name);
-              setComposerInput('');
-              setShowSlashMenu(false);
-            }}
-            onClose={() => setShowSlashMenu(false)}
+        <StatusBar
+          connectionStatus={status}
+          runStatus={activeRunStatus}
+          activeRunId={activeRunId}
+          onCancel={cancelTask}
+        />
+        {(isWorking || fileChanges.length > 0 || filesRead.length > 0) && (
+          <FilesReviewBar
+            filesRead={filesRead}
+            filePaths={fileChanges.map((c) => c.path)}
+            onReview={() => setShowReviewChanges(true)}
           />
         )}
-
-        <div className="composer-card">
-          {(attachments.length > 0 || composerRefs.length > 0) && (
-            <div className="composer-chips">
-              {attachments.map((att) => (
-                <span key={att.id} className="composer-chip" title={att.path}>
-                  {att.type === 'folder' ? <FolderIcon className="icon-sm" /> : <DocumentIcon className="icon-sm" />}
-                  <span>{att.name}</span>
-                  <button className="composer-chip-remove" onClick={() => removeAttachment(att.id)} title="Remove">
-                    <XMarkIcon className="icon-xs" />
-                  </button>
-                </span>
-              ))}
-              <ReferenceChipList references={composerRefs} onRemove={handleRemoveReference} />
-            </div>
-          )}
-
-          <textarea
-            ref={textareaRef}
-            className="composer-input"
-            placeholder={status === 'disconnected' ? 'Connecting…' : 'Ask BlackJak — @ to reference files, / for commands'}
-            value={composerInput}
-            onChange={handleComposerInputChange}
-            onKeyDown={handleKeyDownTextarea}
-            disabled={status === 'disconnected'}
-            rows={3}
-          />
-
-          <div className="composer-toolbar">
-            <div className="composer-actions">
-              <div className="composer-anchored">
-                <button className="composer-icon-btn" title="Attach & actions" onClick={() => setShowPlusMenu(!showPlusMenu)}>
-                  <PlusIcon className="icon-sm" />
-                </button>
-
-                {showPlusMenu && (
-                  <>
-                    <div className="dropdown-backdrop" onClick={() => setShowPlusMenu(false)} />
-                    <div className="composer-dropdown composer-menu">
-                      <button className="composer-dropdown-item" onClick={() => {
-                        setShowPlusMenu(false);
-                        const input = document.createElement('input');
-                        input.type = 'file';
-                        input.onchange = (e: any) => {
-                          const file = e.target?.files?.[0];
-                          if (file) addAttachment(file.name);
-                        };
-                        input.click();
-                      }}>
-                        <PaperClipIcon className="icon-sm" />
-                        <span>Attach file</span>
-                      </button>
-                      <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); setShowPalette(true); }}>
-                        <CommandLineIcon className="icon-sm" />
-                        <span>Commands</span>
-                        <kbd>Ctrl+K</kbd>
-                      </button>
-
-                      <div className="composer-dropdown-divider" />
-
-                      <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); executeSlashCommand('/compact'); }}>
-                        <ArrowsPointingInIcon className="icon-sm" />
-                        <span>Compact context</span>
-                      </button>
-                      <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); executeSlashCommand('/context'); }}>
-                        <ChartBarIcon className="icon-sm" />
-                        <span>Context usage</span>
-                      </button>
-                      <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); executeSlashCommand('/summarize'); }}>
-                        <DocumentTextIcon className="icon-sm" />
-                        <span>Summarize task</span>
-                      </button>
-                      <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); setShowAgentsOverlay(true); }}>
-                        <UserGroupIcon className="icon-sm" />
-                        <span>Agents</span>
-                        {subagents.length > 0 && <span className="dropdown-check">{subagents.length}</span>}
-                      </button>
-
-                      <div className="composer-dropdown-divider" />
-
-                      <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); createSession(); }}>
-                        <ChatBubbleLeftIcon className="icon-sm" />
-                        <span>New session</span>
-                      </button>
-                      <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); setShowSettings(true); }}>
-                        <Cog6ToothIcon className="icon-sm" />
-                        <span>Settings</span>
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <button
-                className="chip-btn"
-                onClick={() => settingsStore.updateSettings({ mode: settings.mode === 'plan' ? 'code' : 'plan' })}
-                title={`Mode: ${settings.mode === 'plan' ? 'Plan — click for Code' : 'Code — click for Plan'}`}
-              >
-                <ShieldCheckIcon className="icon-sm" />
-                <span>{settings.mode === 'plan' ? 'Plan' : 'Code'}</span>
-              </button>
-
-              <div className="composer-anchored">
-                <button className="chip-btn" onClick={() => setShowEffortPicker(!showEffortPicker)} title="Model & effort">
-                  <span>{modelLabel} · <span style={{ textTransform: 'capitalize' }}>{settings.effort.replace('_', ' ')}</span></span>
-                </button>
-
-                {showEffortPicker && (
-                  <>
-                    <div className="dropdown-backdrop" onClick={() => setShowEffortPicker(false)} />
-                    <div className="composer-dropdown">
-                      {(['low', 'medium', 'high', 'extra_high'] as const).map((level) => (
+        <ComposerBar
+          input={composerInput}
+          onInputChange={handleComposerInputChange}
+          onSubmit={handleComposerSubmit}
+          disabled={status === 'disconnected'}
+          isWorking={isWorking}
+          isPaused={activeRunStatus === 'paused'}
+          mode={composerMode}
+          effort={settings.effort}
+          modelLabel={modelLabel}
+          models={modelOptions}
+          selectedModelId={settings.codingModelId || settings.coding?.modelId || ''}
+          onModeChange={(m: AgentModeUI) => settingsStore.updateSettings({ mode: m })}
+          onEffortChange={(effort) => settingsStore.updateSettings({ effort })}
+          onModelChange={(modelId, role) => {
+            if (role === 'thinking') settingsStore.updateSettings({ thinkingModelId: modelId, thinking: { ...settings.thinking, modelId } });
+            else if (role === 'fast') settingsStore.updateSettings({ fastModelId: modelId, fast: { ...settings.fast, modelId } });
+            else if (role === 'review') settingsStore.updateSettings({ reviewModelId: modelId, review: { ...settings.review, modelId } });
+            else settingsStore.updateSettings({ codingModelId: modelId, coding: { ...settings.coding, modelId } });
+          }}
+          onAttach={(paths) =>
+            paths.forEach((path) => {
+              const preview =
+                takePreview(path) ||
+                (isImageName(path) ? workspacePreviewUrl(apiClient.getBaseUrl(), path) : undefined);
+              addAttachment(path, preview ? 'image' : 'file', { previewUrl: preview });
+            })
+          }
+          onPause={pauseTask}
+          onStop={cancelTask}
+          onResume={() => resumeTask()}
+          showSlashMenu={showSlashMenu}
+          slashMenu={
+            <SlashCommandMenu
+              query={composerInput}
+              onSelect={(cmd) => {
+                executeSlashCommand(cmd.name);
+                setComposerInput('');
+                setShowSlashMenu(false);
+              }}
+              onClose={() => setShowSlashMenu(false)}
+            />
+          }
+          chips={
+            (attachments.length > 0 || composerRefs.length > 0) ? (
+              <div className="composer-chips">
+                {attachments.map((att) => {
+                  const preview =
+                    att.previewUrl ||
+                    (att.type === 'image' || isImageName(att.name)
+                      ? workspacePreviewUrl(apiClient.getBaseUrl(), att.path)
+                      : undefined);
+                  return (
+                    <span
+                      key={att.id}
+                      className={`composer-chip ${preview ? 'composer-chip-image' : ''}`}
+                      title={att.path}
+                    >
+                      {preview ? (
                         <button
-                          key={level}
-                          className={`composer-dropdown-item ${settings.effort === level ? 'active' : ''}`}
-                          onClick={() => { settingsStore.updateSettings({ effort: level }); setShowEffortPicker(false); }}
+                          type="button"
+                          className="composer-chip-thumb-btn"
+                          onClick={() => setLightboxSrc(preview)}
                         >
-                          <span style={{ textTransform: 'capitalize' }}>{level.replace('_', ' ')}</span>
-                          {settings.effort === level && <span className="dropdown-check">✓</span>}
+                          <img src={preview} alt={att.name} className="composer-chip-thumb" />
                         </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+                      ) : att.type === 'folder' ? (
+                        <FolderIcon className="icon-sm" />
+                      ) : (
+                        <DocumentIcon className="icon-sm" />
+                      )}
+                      <span>{att.name}</span>
+                      <button className="composer-chip-remove" onClick={() => removeAttachment(att.id)} title="Remove">
+                        <XMarkIcon className="icon-xs" />
+                      </button>
+                    </span>
+                  );
+                })}
+                <ReferenceChipList references={composerRefs} onRemove={handleRemoveReference} />
               </div>
-            </div>
+            ) : null
+          }
+          compactChat={compactChat}
+          onToggleCompact={() => setCompactChat((v) => !v)}
+        />
 
-            <div className="composer-actions">
-              <span className="chip-btn composer-env-chip" title="Environment">
-                <CpuChipIcon className="icon-sm" />
-                <span>Local</span>
-              </span>
-              {isWorking ? (
-                <>
-                  <button className="composer-send-btn" onClick={pauseTask} title="Pause — context stays saved">
-                    <PauseIcon className="icon-sm" />
-                  </button>
-                  <button className="composer-send-btn composer-send-btn-stop" onClick={cancelTask} title="Stop">
-                    <StopIcon className="icon-sm" />
-                  </button>
-                </>
-              ) : activeRunStatus === 'paused' ? (
-                <button className="composer-send-btn" onClick={() => resumeTask()} title="Resume">
-                  <PlayIcon className="icon-sm" />
-                </button>
-              ) : (
-                <button className="composer-send-btn" onClick={handleComposerSubmit} disabled={status === 'disconnected' || !composerInput.trim()} title="Send">
-                  <ArrowUpIcon className="icon-sm" />
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Context strip — environment + workspace */}
         <div className="composer-contextbar">
           <span className="context-chip">
             <ComputerDesktopIcon className="icon-sm" />
@@ -792,6 +875,50 @@ export const App: React.FC = () => {
               <FolderIcon className="icon-sm" />
               <span>{workspaceName}</span>
             </span>
+          )}
+          {cacheHitRate != null && (
+            <span className="context-chip cache-hit" title="Prompt cache hit rate">
+              <span>Cache {Math.round(cacheHitRate * 100)}%</span>
+            </span>
+          )}
+          <button className="context-chip" onClick={() => setShowActivity(true)} title="Activity log">
+            <ClockIcon className="icon-sm" />
+            <span>Activity</span>
+          </button>
+          <button className="context-chip" onClick={() => setShowPlusMenu(!showPlusMenu)} title="More">
+            <PlusIcon className="icon-sm" />
+          </button>
+          {showPlusMenu && (
+            <>
+              <div className="dropdown-backdrop" onClick={() => setShowPlusMenu(false)} />
+              <div className="composer-dropdown composer-menu" style={{ bottom: '36px', right: 0 }}>
+                <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); setShowPalette(true); }}>
+                  <CommandLineIcon className="icon-sm" />
+                  <span>Commands</span>
+                  <kbd>Ctrl+K</kbd>
+                </button>
+                <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); executeSlashCommand('/compact'); }}>
+                  <ArrowsPointingInIcon className="icon-sm" />
+                  <span>Compact context</span>
+                </button>
+                <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); executeSlashCommand('/context'); }}>
+                  <ChartBarIcon className="icon-sm" />
+                  <span>Context usage</span>
+                </button>
+                <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); setShowAgentsOverlay(true); }}>
+                  <UserGroupIcon className="icon-sm" />
+                  <span>Agents</span>
+                </button>
+                <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); createSession(); }}>
+                  <ChatBubbleLeftIcon className="icon-sm" />
+                  <span>New session</span>
+                </button>
+                <button className="composer-dropdown-item" onClick={() => { setShowPlusMenu(false); setShowSettings(true); }}>
+                  <Cog6ToothIcon className="icon-sm" />
+                  <span>Settings</span>
+                </button>
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -829,7 +956,7 @@ export const App: React.FC = () => {
         <div className="popover-overlay" onClick={() => setShowAgentsOverlay(false)}>
           <div className="popover-card" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
-              <span style={{ fontWeight: 600, fontSize: '12px' }}>AGENTS</span>
+              <span style={{ fontWeight: 600, fontSize: '12px' }}>Agents</span>
               <button className="icon-btn" onClick={() => setShowAgentsOverlay(false)}><XMarkIcon className="icon-sm" /></button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -852,11 +979,19 @@ export const App: React.FC = () => {
       )}
 
       <Approval request={pendingApproval} onRespond={respondApproval} />
+      {lightboxSrc && <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />}
 
       <AgentResult subagent={selectedSubagentObj} fileChanges={fileChanges} onClose={() => selectSubagent(null)} />
 
       {showSettings && (
-        <SettingsPage agentStatus={status} workspacePath="" onClose={() => setShowSettings(false)} />
+        <SettingsPage
+          agentStatus={status}
+          workspacePath={workspaceRoot || ''}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+      {showActivity && (
+        <ActivityPanel runId={activeRunId} onClose={() => setShowActivity(false)} />
       )}
 
       <CommandPalette isOpen={showPalette} onClose={() => setShowPalette(false)} commands={paletteCommands} />

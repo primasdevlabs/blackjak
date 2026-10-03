@@ -29,30 +29,10 @@ type SubagentContext struct {
 }
 
 // DefaultToolPermissions returns the default tool set for a given role.
-// Roles not in this map get full tool access (empty slice).
+// Names match registered tools (filesystem, search, shell, git, test, memory).
+// Roles not in this map get full tool access (nil).
 func DefaultToolPermissions(role string) []string {
-	switch role {
-	case "explorer":
-		return []string{"search", "read", "git"}
-	case "researcher":
-		return []string{"search", "read", "git"}
-	case "architect":
-		return []string{"read", "search"}
-	case "coder":
-		return []string{"read", "write", "search", "shell", "git"}
-	case "debugger":
-		return []string{"read", "write", "search", "shell", "test"}
-	case "tester":
-		return []string{"read", "shell", "test"}
-	case "reviewer":
-		return []string{"read", "search", "git"}
-	case "refactorer":
-		return []string{"read", "write", "search", "git"}
-	case "documentation":
-		return []string{"read", "write", "search"}
-	default:
-		return nil // nil = all tools allowed
-	}
+	return RoleToolAllowlist(role)
 }
 
 // HasToolPermission checks whether the subagent context allows a specific tool.

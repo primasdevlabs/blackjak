@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
-	"path/filepath"
-
+	"blackjak/activity"
 	"blackjak/agent"
+	bjctx "blackjak/context"
 	"blackjak/llm"
 	"blackjak/memory"
 	"blackjak/protocol"
+	"blackjak/rules"
+	"blackjak/skills"
 	"blackjak/workspace"
 )
 
@@ -41,6 +45,12 @@ type Server struct {
 
 	hostInfo    *protocol.HostInfo
 	hostInfoMtx sync.RWMutex
+
+	skillsRegistry *skills.Registry
+	rulesStore     *rules.Store
+	activityLog    *activity.Ring
+	fileIndex      *workspace.FileIndex
+	usageStats     *UsageStats
 }
 
 // NewServer initializes an API Server.
@@ -62,6 +72,56 @@ func NewServer(cfg ServerConfig, llmClient llm.Client) *Server {
 		filepath.Join(cfg.Workspace, ".blackjak", "memory.json")))
 	// Guardrails resolve per-run so Settings edits apply immediately.
 	ag.SetPolicyResolver(sm.Policy)
+	skillsReg := skills.NewRegistry(cfg.Workspace)
+	rulesStore := rules.NewStore(cfg.Workspace)
+	ag.SetRulesProvider(func() string { return rulesStore.AssembleEnabled() })
+	ag.SetModeProvider(func() string {
+		return string(NormalizeMode(sm.GetConfig().Mode))
+	})
+	ag.SetAskPolicyProvider(func() string {
+		return string(NormalizeAskPolicy(sm.GetConfig().AskPolicy))
+	})
+	ag.SetSkillProvider(func(run *agent.Run) string {
+		// Skill name may be passed as "/skill-name ..." in the prompt.
+		prompt := strings.TrimSpace(run.Prompt)
+		if !strings.HasPrefix(prompt, "/") {
+			return ""
+		}
+		name := strings.TrimPrefix(strings.Fields(prompt)[0], "/")
+		if sk, ok := skillsReg.Get(name); ok && sk.Enabled {
+			return sk.Body
+		}
+		return ""
+	})
+	fileIndex := workspace.NewFileIndex(cfg.Workspace)
+	ag.SetBrowserToolProvider(func() (bool, []string) {
+		cfg := sm.GetConfig()
+		enabled := cfg.BetaFlags != nil && cfg.BetaFlags["browserTool"]
+		return enabled, cfg.NetworkAllowlist
+	})
+	ag.SetRetriever(func(query string, limit int) []string {
+		retriever := bjctx.NewRetriever(cfg.Workspace, fileIndex)
+		return retriever.Retrieve(query, limit)
+	})
+	ag.SetRepoSnapshotProvider(func() string {
+		snap := fileIndex.Snapshot()
+		if snap.FileCount == 0 && len(snap.Languages) == 0 {
+			return ""
+		}
+		var b strings.Builder
+		b.WriteString("Repository snapshot:\n")
+		if len(snap.Languages) > 0 {
+			fmt.Fprintf(&b, "- Languages: %s\n", strings.Join(snap.Languages, ", "))
+		}
+		fmt.Fprintf(&b, "- Indexed files: %d\n", snap.FileCount)
+		if len(snap.BuildFiles) > 0 {
+			fmt.Fprintf(&b, "- Build files: %s\n", strings.Join(snap.BuildFiles, ", "))
+		}
+		if len(snap.Entrypoints) > 0 {
+			fmt.Fprintf(&b, "- Entrypoints: %s\n", strings.Join(snap.Entrypoints, ", "))
+		}
+		return b.String()
+	})
 	// Rehydrate checkpointed runs so paused/stopped work survives restarts.
 	rm.RestoreFromWorkspace(cfg.Workspace)
 	ag.SetClientResolver(func(role string) llm.Client {
@@ -103,6 +163,11 @@ func NewServer(cfg ServerConfig, llmClient llm.Client) *Server {
 		queueManager:    qm,
 		commandRegistry: cr,
 		agent:           ag,
+		skillsRegistry:  skillsReg,
+		rulesStore:      rulesStore,
+		activityLog:     activity.NewRing(2000),
+		fileIndex:       fileIndex,
+		usageStats:      &UsageStats{},
 	}
 }
 
@@ -155,6 +220,49 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/queue/", s.handleQueueSubroutes)
 	mux.HandleFunc("/api/commands", s.handleCommands)
 	mux.HandleFunc("/api/commands/execute", s.handleExecuteCommand)
+	mux.HandleFunc("/api/workspace/files", s.handleWorkspaceFiles)
+	mux.HandleFunc("/api/workspace/symbols", s.handleWorkspaceSymbols)
+	mux.HandleFunc("/api/diffs/", s.handleDiffDownload)
+	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/skills/", s.handleSkillsSubroutes)
+	mux.HandleFunc("/api/rules", s.handleRules)
+	mux.HandleFunc("/api/rules/enable", s.handleRulesEnable)
+	mux.HandleFunc("/api/rules/update", s.handleRulesUpdate)
+	mux.HandleFunc("/api/rules/delete", s.handleRulesDelete)
+	mux.HandleFunc("/api/rules/", s.handleRulesSubroutes)
+	mux.HandleFunc("/api/activity", s.handleActivity)
+	mux.HandleFunc("/api/index", s.handleIndex)
+	mux.HandleFunc("/api/index/rebuild", s.handleIndexRebuild)
+	mux.HandleFunc("/api/usage", s.handleUsage)
+	mux.HandleFunc("/api/uploads", s.handleUploads)
+	mux.HandleFunc("/api/raw", s.handleRawFile)
+
+	// Mirror agent events into the activity ring + usage counters.
+	if s.broker != nil && s.activityLog != nil {
+		ch, _ := s.broker.Subscribe("")
+		go func() {
+			for evt := range ch {
+				msg, data := auditActivityPayload(evt.Type, evt.Data)
+				s.activityLog.Add(evt.RunID, string(evt.Type), msg, data)
+				if evt.Type == agent.EventCacheStats && s.usageStats != nil {
+					if m, ok := evt.Data.(map[string]interface{}); ok {
+						num := func(k string) int64 {
+							switch v := m[k].(type) {
+							case float64:
+								return int64(v)
+							case int64:
+								return v
+							case int:
+								return int64(v)
+							}
+							return 0
+						}
+						s.usageStats.Record(num("inputTokens"), num("outputTokens"), num("cacheReadTokens"), num("cacheWriteTokens"))
+					}
+				}
+			}
+		}()
+	}
 
 	handler := s.withCORS(mux)
 

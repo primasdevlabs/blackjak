@@ -25,10 +25,30 @@ func New(baseURL, apiKey, modelID string) *CompatibleProvider {
 		modelID = "llama3.2"
 	}
 	return &CompatibleProvider{
-		baseURL: strings.TrimSuffix(baseURL, "/"),
+		baseURL: normalizeCompatibleBaseURL(baseURL),
 		apiKey:  apiKey,
 		modelID: modelID,
 	}
+}
+
+// normalizeCompatibleBaseURL accepts either the API root (.../v1) or a full
+// chat endpoint (.../v1/chat/completions). Chat/models paths are appended by
+// callers, so a pasted full URL must be trimmed or requests 404.
+func normalizeCompatibleBaseURL(baseURL string) string {
+	u := strings.TrimSpace(baseURL)
+	u = strings.TrimRight(u, "/")
+	for _, suffix := range []string{
+		"/chat/completions",
+		"/completions",
+		"/models",
+	} {
+		if strings.HasSuffix(strings.ToLower(u), suffix) {
+			u = u[:len(u)-len(suffix)]
+			u = strings.TrimRight(u, "/")
+			break
+		}
+	}
+	return u
 }
 
 func (p *CompatibleProvider) Name() string {
@@ -56,7 +76,7 @@ func (p *CompatibleProvider) Ping(ctx context.Context) error {
 		req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
 
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := llm.NewHTTPClient(8 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("connection failed: %w", err)
@@ -78,7 +98,7 @@ func (p *CompatibleProvider) ListModels(ctx context.Context) ([]llm.Model, error
 		if p.apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+p.apiKey)
 		}
-		client := &http.Client{Timeout: 5 * time.Second}
+		client := llm.NewHTTPClient(5 * time.Second)
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			defer resp.Body.Close()

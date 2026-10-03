@@ -49,7 +49,7 @@ func (s *ShellTool) Schema() interface{} {
 
 // destructivePattern matches commands that delete data, kill processes, or
 // mutate system/git state irreversibly.
-var destructivePattern = regexp.MustCompile(`(?i)(\brm\s+-[a-z]*r|\brm\s+-[a-z]*f|\bdel\s+/[fs]|\brmdir\s+/s|git\s+(push\s+.*--force|reset\s+--hard|clean\s+-[a-z]*f)|\bmkfs\b|\bdd\s+if=|\bformat\b|>\s*/dev/|shutdown|reboot|kill\s+-9)`)
+var destructivePattern = regexp.MustCompile(`(?i)(\brm\s|\bdel\s|\brmdir\s|/s\s|/q\s|git\s+(push|reset\s+--hard|clean\s+-[a-z]*f)|\bmkfs\b|\bdd\s+if=|\bformat\b|>\s*/dev/|shutdown|reboot|kill\s+-9)`)
 
 func (s *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	cmd := argString(args, "command")

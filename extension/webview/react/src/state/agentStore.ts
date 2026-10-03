@@ -3,6 +3,7 @@ import { ConnectionStatus, wsClient } from '../api/websocket';
 import { apiClient } from '../api/client';
 import { activityManager, describeToolCall } from '../activity/activityManager';
 import { agentHost } from '../host';
+import { EngineeringPhaseState } from '../components/EngineeringPhase';
 
 export interface ToolExecution {
   id: string;
@@ -24,6 +25,8 @@ export interface ChatMessage {
   sender: 'user' | 'agent';
   text: string;
   timestamp: string;
+  /** Render as a walkthrough answer chip in the transcript. */
+  kind?: 'text' | 'choice' | 'plan';
 }
 
 export interface CompletionSummary {
@@ -40,6 +43,7 @@ export interface SessionMeta {
   id: string;
   title: string;
   runStatus: RunStatus | null;
+  dirty?: boolean;
 }
 
 /** Full per-session data — the tab's entire conversation + run state. */
@@ -49,6 +53,7 @@ interface Session {
   createdAt: string;
   runId: string | null;
   runStatus: RunStatus | null;
+  dirty: boolean;
   messages: ChatMessage[];
   plan: Plan | null;
   toolExecutions: ToolExecution[];
@@ -58,6 +63,7 @@ interface Session {
   filesRead: string[];
   thought: string;
   completion: CompletionSummary | null;
+  engineering: EngineeringPhaseState | null;
 }
 
 export interface AgentState {
@@ -83,6 +89,7 @@ export interface AgentState {
   filesRead: string[];
   thought: string;
   completion: CompletionSummary | null;
+  engineering: EngineeringPhaseState | null;
   workspaceRoot: string;
 }
 
@@ -97,6 +104,7 @@ function makeSession(id: string, title = DEFAULT_TITLE): Session {
     createdAt: new Date().toISOString(),
     runId: null,
     runStatus: null,
+    dirty: false,
     messages: [],
     plan: null,
     toolExecutions: [],
@@ -106,6 +114,7 @@ function makeSession(id: string, title = DEFAULT_TITLE): Session {
     filesRead: [],
     thought: '',
     completion: null,
+    engineering: null,
   };
 }
 
@@ -133,6 +142,7 @@ class AgentStore {
     filesRead: [],
     thought: '',
     completion: null,
+    engineering: null,
     workspaceRoot: '',
   };
 
@@ -148,9 +158,11 @@ class AgentStore {
   private awaitingRun: string[] = [];
 
   constructor() {
-    const first = makeSession(`sess_${Date.now()}`);
-    this.sessionMap.set(first.id, first);
-    this.state.activeSessionId = first.id;
+    if (!this.restoreSessions()) {
+      const first = makeSession(`sess_${Date.now()}`);
+      this.sessionMap.set(first.id, first);
+      this.state.activeSessionId = first.id;
+    }
     this.publish();
 
     wsClient.onStatusChange((status) => {
@@ -163,6 +175,54 @@ class AgentStore {
     wsClient.onMessage((msg) => {
       this.handleServerMessage(msg);
     });
+  }
+
+  private persistSessions() {
+    try {
+      const payload = {
+        activeSessionId: this.state.activeSessionId,
+        sessions: [...this.sessionMap.values()].map((s) => ({
+          id: s.id,
+          title: s.title,
+          createdAt: s.createdAt,
+          runId: s.runId,
+        })),
+      };
+      localStorage.setItem('blackjak.sessions.v1', JSON.stringify(payload));
+      const w = window as any;
+      if (w.vscode?.setState) {
+        const prev = w.vscode.getState?.() || {};
+        w.vscode.setState({ ...prev, sessions: payload });
+      }
+    } catch {
+      /* quota / private mode */
+    }
+  }
+
+  private restoreSessions(): boolean {
+    try {
+      const w = window as any;
+      const fromVs = w.vscode?.getState?.()?.sessions;
+      const raw = fromVs ? JSON.stringify(fromVs) : localStorage.getItem('blackjak.sessions.v1');
+      if (!raw) return false;
+      const data = typeof fromVs === 'object' && fromVs ? fromVs : JSON.parse(raw);
+      if (!Array.isArray(data.sessions) || data.sessions.length === 0) return false;
+      this.sessionMap.clear();
+      for (const s of data.sessions) {
+        const sess = makeSession(s.id, s.title || DEFAULT_TITLE);
+        sess.createdAt = s.createdAt || sess.createdAt;
+        sess.runId = s.runId || null;
+        this.sessionMap.set(sess.id, sess);
+        if (sess.runId) this.runToSession.set(sess.runId, sess.id);
+      }
+      const active = data.activeSessionId && this.sessionMap.has(data.activeSessionId)
+        ? data.activeSessionId
+        : [...this.sessionMap.keys()][0];
+      this.state.activeSessionId = active;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -179,17 +239,33 @@ class AgentStore {
 
       const runs = await apiClient.listRuns();
       this.setState({ runs });
+
+      // Restore any persisted session that still has a known runId.
+      for (const sess of this.sessionMap.values()) {
+        if (!sess.runId) continue;
+        const match = runs.find((r) => r.id === sess.runId);
+        if (!match) continue;
+        try {
+          const full = await apiClient.getRun(match.id);
+          this.loadRunIntoSession(full, sess);
+        } catch { /* skip */ }
+      }
+
       const live = runs
         .filter((r) => r.status === 'running' || r.status === 'waiting' || r.status === 'pending' || r.status === 'paused')
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-      if (!live) return;
+      if (!live) {
+        this.publish();
+        return;
+      }
 
-      const run = await apiClient.getRun(live.id);
-
-      // Bind the live run to the active session.
-      const sess = this.activeSession();
+      const owned = [...this.sessionMap.values()].find((s) => s.runId === live.id);
+      const sess = owned || this.activeSession();
       if (!sess) return;
+      const run = await apiClient.getRun(live.id);
       this.loadRunIntoSession(run, sess);
+      if (!owned) this.state.activeSessionId = sess.id;
+      this.publish();
     } catch {
       // backend unreachable or no run history — stay idle
     }
@@ -305,6 +381,7 @@ class AgentStore {
         id: s.id,
         title: s.title,
         runStatus: s.runStatus,
+        dirty: s.dirty || s.fileChanges.length > 0 || (s.runStatus === 'running' || s.runStatus === 'waiting' || s.runStatus === 'paused'),
       })),
       activeRunId: sess?.runId ?? null,
       activeRunStatus: sess?.runStatus ?? null,
@@ -317,7 +394,9 @@ class AgentStore {
       filesRead: sess?.filesRead ?? [],
       thought: sess?.thought ?? '',
       completion: sess?.completion ?? null,
+      engineering: sess?.engineering ?? null,
     });
+    this.persistSessions();
   }
 
   // --- Session management ---
@@ -356,6 +435,31 @@ class AgentStore {
     this.publish();
   }
 
+  renameSession(id: string, title: string) {
+    const sess = this.sessionMap.get(id);
+    if (!sess) return;
+    const next = title.trim() || DEFAULT_TITLE;
+    sess.title = next.slice(0, 48);
+    this.publish();
+  }
+
+  reorderSessions(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    const ids = [...this.sessionMap.keys()];
+    const from = ids.indexOf(fromId);
+    const to = ids.indexOf(toId);
+    if (from < 0 || to < 0) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, fromId);
+    const next = new Map<string, Session>();
+    for (const id of ids) {
+      const s = this.sessionMap.get(id);
+      if (s) next.set(id, s);
+    }
+    this.sessionMap = next;
+    this.publish();
+  }
+
   // ---
 
   configureBackend(backendUrl: string, wsUrl: string) {
@@ -365,15 +469,42 @@ class AgentStore {
     wsClient.connect();
   }
 
-  addAttachment(path: string, type: 'file' | 'folder' = 'file') {
-    const name = path.split(/[/\\]/).pop() || path;
+  addAttachment(
+    path: string,
+    type: 'file' | 'folder' | 'image' = 'file',
+    extras?: { previewUrl?: string; mime?: string; name?: string }
+  ) {
+    const name = extras?.name || path.split(/[/\\]/).pop() || path;
+    const isImage =
+      type === 'image' ||
+      /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name) ||
+      (extras?.mime || '').startsWith('image/');
     const att: Attachment = {
       id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      type,
+      type: isImage ? 'image' : type === 'folder' ? 'folder' : 'file',
       path,
       name,
+      previewUrl: extras?.previewUrl,
+      mime: extras?.mime,
     };
     this.setState({ attachments: [...this.state.attachments, att] });
+  }
+
+  /** Record a walkthrough choice as a user chip in the transcript. */
+  addChoiceMessage(answer: string) {
+    const sess = this.activeSession();
+    if (!sess) return;
+    sess.messages = [
+      ...sess.messages,
+      {
+        id: `choice_${Date.now()}`,
+        sender: 'user',
+        text: answer,
+        timestamp: new Date().toISOString(),
+        kind: 'choice',
+      },
+    ];
+    this.publish();
   }
 
   removeAttachment(id: string) {
@@ -499,8 +630,21 @@ class AgentStore {
   respondApproval(granted: boolean, reason?: string) {
     const sess = this.activeSession();
     if (sess?.runId && sess.pendingApproval) {
+      const wasAsk = sess.pendingApproval.operation === 'ask_user';
       wsClient.respondApproval(sess.runId, sess.pendingApproval.id, granted, reason);
       sess.pendingApproval = null;
+      if (granted && wasAsk && reason) {
+        sess.messages = [
+          ...sess.messages,
+          {
+            id: `choice_${Date.now()}`,
+            sender: 'user',
+            text: reason,
+            timestamp: new Date().toISOString(),
+            kind: 'choice',
+          },
+        ];
+      }
       this.publish();
     }
   }
@@ -579,14 +723,31 @@ class AgentStore {
 
       case 'run.completed':
         sess.runStatus = 'completed';
-        sess.completion = {
-          result: data?.result || 'Task completed',
-          recommendations: data?.recommendations,
-          durationMs: data?.durationMs,
-          filesChanged: data?.filesChanged,
-          subagents: data?.subagents,
-          steps: data?.steps,
-        };
+        {
+          const lastAgent = [...sess.messages].reverse().find((m) => m.sender === 'agent')?.text?.trim();
+          const rawResult = String(data?.result || '').trim();
+          // Avoid echoing the assistant reply already in the transcript.
+          const result =
+            rawResult && rawResult !== lastAgent && !/^task completed$/i.test(rawResult)
+              ? rawResult
+              : '';
+          sess.completion = {
+            result,
+            recommendations: data?.recommendations,
+            durationMs: data?.durationMs,
+            filesChanged: data?.filesChanged,
+            subagents: data?.subagents,
+            steps: data?.steps,
+          };
+          const meaningful =
+            (data?.filesChanged || 0) > 0 ||
+            (data?.steps || 0) > 1 ||
+            (data?.subagents || 0) > 0 ||
+            (data?.recommendations && data.recommendations.length > 0);
+          if (meaningful) {
+            agentHost.showNotification('Run completed', 'info');
+          }
+        }
         break;
 
       case 'run.failed':
@@ -602,6 +763,7 @@ class AgentStore {
             },
           ];
         }
+        agentHost.showNotification(data?.error ? `Run failed — ${data.error}` : 'Run failed', 'error');
         break;
 
       case 'run.paused':
@@ -692,6 +854,16 @@ class AgentStore {
         if (data && Array.isArray(data.steps)) {
           sess.plan = data as Plan;
         }
+        break;
+
+      case 'agent.phase':
+        sess.engineering = {
+          phase: data?.phase || 'understand',
+          taskClass: data?.taskClass || 'trivial',
+          evidence: data?.evidence || {},
+          filesChanged: !!data?.filesChanged,
+          review: data?.review || undefined,
+        };
         break;
 
       case 'tool.started':

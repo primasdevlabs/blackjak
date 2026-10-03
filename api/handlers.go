@@ -288,7 +288,7 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 
 	runID := parts[0]
 	run, ok := s.runManager.GetRun(runID)
-	if !ok {
+	if !ok && !(len(parts) >= 2 && parts[1] == "resume") {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Run '%s' not found", runID))
 		return
 	}
@@ -348,7 +348,7 @@ func (s *Server) handleRunSubroutes(w http.ResponseWriter, r *http.Request) {
 			Prompt string `json:"prompt"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&payload)
-		resumedRun, err := s.runManager.ResumeRun(runID, payload.Prompt)
+		resumedRun, err := s.runManager.ResumeRun(runID, payload.Prompt, s.workspace.RootPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

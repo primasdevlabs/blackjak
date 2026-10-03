@@ -54,7 +54,12 @@ export function registerAgentCommands(
 
   const openSettingsCmd = vscode.commands.registerCommand('agent.openSettings', async () => {
     await agentManager.waitUntilReady();
-    webviewProvider.showPanel();
+    webviewProvider.showPanel('settings');
+  });
+
+  const openActivityCmd = vscode.commands.registerCommand('agent.openActivity', async () => {
+    await agentManager.waitUntilReady();
+    webviewProvider.showPanel('activity');
   });
 
   const showLogsCmd = vscode.commands.registerCommand('agent.showLogs', () => {
@@ -69,6 +74,7 @@ export function registerAgentCommands(
     cancelCmd,
     restartCmd,
     openSettingsCmd,
+    openActivityCmd,
     showLogsCmd
   );
 }

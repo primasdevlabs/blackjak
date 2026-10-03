@@ -28,7 +28,7 @@ type FilesystemTool struct {
 func (f *FilesystemTool) Name() string { return "filesystem" }
 
 func (f *FilesystemTool) Description() string {
-	return "Read, write, edit, and list files. Paths are resolved relative to the workspace root and cannot escape it."
+	return "Read, write, edit, and list files. Prefer edit (exact old_string→new_string) to change existing files in place; use write only for new files or full rewrites. Paths stay inside the workspace."
 }
 
 func (f *FilesystemTool) Schema() interface{} {
@@ -50,11 +50,15 @@ func (f *FilesystemTool) Schema() interface{} {
 			},
 			"old_string": map[string]interface{}{
 				"type":        "string",
-				"description": "Exact text to replace for edit",
+				"description": "Exact text to replace for edit (include enough surrounding context for a unique match)",
 			},
 			"new_string": map[string]interface{}{
 				"type":        "string",
 				"description": "Replacement text for edit",
+			},
+			"replace_all": map[string]interface{}{
+				"type":        "boolean",
+				"description": "If true, replace every occurrence of old_string (default false — unique match required)",
 			},
 			"offset": map[string]interface{}{
 				"type":        "integer",
@@ -83,6 +87,9 @@ func (f *FilesystemTool) Execute(ctx context.Context, args map[string]interface{
 
 	switch op {
 	case "read":
+		if err := f.policy.CheckRead(path); err != nil {
+			return nil, err
+		}
 		return f.read(abs, argInt(args, "offset", 0), argInt(args, "limit", 500))
 	case "write":
 		if err := f.policy.CheckWrite(path); err != nil {
@@ -93,7 +100,7 @@ func (f *FilesystemTool) Execute(ctx context.Context, args map[string]interface{
 		if err := f.policy.CheckWrite(path); err != nil {
 			return nil, err
 		}
-		return f.edit(abs, argString(args, "old_string"), argString(args, "new_string"))
+		return f.edit(abs, argString(args, "old_string"), argString(args, "new_string"), argBool(args, "replace_all"))
 	case "list":
 		return f.list(abs, argInt(args, "limit", 500))
 	case "exists":
@@ -150,7 +157,10 @@ func (f *FilesystemTool) write(abs, content string) (interface{}, error) {
 	}, nil
 }
 
-func (f *FilesystemTool) edit(abs, oldStr, newStr string) (interface{}, error) {
+func (f *FilesystemTool) edit(abs, oldStr, newStr string, replaceAll bool) (interface{}, error) {
+	if oldStr == "" {
+		return nil, fmt.Errorf("old_string is required for edit")
+	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, err
@@ -158,25 +168,34 @@ func (f *FilesystemTool) edit(abs, oldStr, newStr string) (interface{}, error) {
 	text := string(data)
 	count := strings.Count(text, oldStr)
 	if count == 0 {
-		return nil, fmt.Errorf("old_string not found in file")
+		return nil, fmt.Errorf("old_string not found in file — re-read the file and target an exact contiguous snippet")
 	}
-	if count > 1 {
-		return nil, fmt.Errorf("old_string matches %d locations; provide more context for a unique match", count)
+	if count > 1 && !replaceAll {
+		return nil, fmt.Errorf("old_string matches %d locations; provide more surrounding context for a unique match, or set replace_all=true", count)
 	}
 	prev, lost := text, false
 	if len(data) > maxSnapshotBytes {
 		prev, lost = "", true
 	}
-	if err := os.WriteFile(abs, []byte(strings.Replace(text, oldStr, newStr, 1)), 0o644); err != nil {
+	n := 1
+	if replaceAll {
+		n = -1
+	}
+	updated := strings.Replace(text, oldStr, newStr, n)
+	if err := os.WriteFile(abs, []byte(updated), 0o644); err != nil {
 		return nil, err
+	}
+	replaced := count
+	if !replaceAll {
+		replaced = 1
 	}
 	rel, _ := filepath.Rel(f.ws.RootPath, abs)
 	return map[string]interface{}{
-		"path":           filepath.ToSlash(rel),
-		"replaced":       1,
-		"existed":        true,
+		"path":            filepath.ToSlash(rel),
+		"replaced":        replaced,
+		"existed":         true,
 		"previousContent": prev,
-		"snapshotLost":   lost,
+		"snapshotLost":    lost,
 	}, nil
 }
 

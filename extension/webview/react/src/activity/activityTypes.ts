@@ -21,7 +21,7 @@ export interface ActivityConfig {
   enabled: boolean;
 }
 
-/** A finished phase with its elapsed duration, e.g. "Stargazing — 2m 40s". */
+/** A finished phase with its elapsed duration, e.g. "Reviewing project structure — 2m 40s". */
 export interface ActivityPhase {
   category: ActivityCategory;
   /** The ambient message that was showing when the phase ended. */
@@ -58,19 +58,16 @@ export function formatElapsed(ms: number): string {
   return remM > 0 ? `${h}h ${remM}m` : `${h}h`;
 }
 
-/** Past-tense label for a finished phase, e.g. exploring -> "Stargazed". */
+/** Past-tense label for a finished phase, e.g. exploring -> "Explored". */
 export function phaseLabel(cat: ActivityCategory, message?: string): string {
-  // Strip trailing ellipsis and use the ambient message verbatim — the
-  // rotating messages already read well as past-tense descriptors when
-  // suffixed with a duration ("Stargazing at the codebase — 2m").
-  if (message) return message.replace(/…+$/, '');
+  if (message) return message.replace(/…+$/, '').replace(/\.+$/, '');
   switch (cat) {
     case 'exploring': return 'Explored';
     case 'editing': return 'Edited';
-    case 'thinking': return 'Thought';
-    case 'testing': return 'Tested';
+    case 'thinking': return 'Analyzed';
+    case 'testing': return 'Validated';
     case 'debugging': return 'Debugged';
-    case 'finishing': return 'Wrapped up';
-    default: return 'Orchestrated';
+    case 'finishing': return 'Completed';
+    default: return 'Coordinated';
   }
 }

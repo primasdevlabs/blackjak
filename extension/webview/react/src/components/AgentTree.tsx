@@ -21,43 +21,35 @@ const getStatusIcon = (status: string): React.ReactNode => {
   }
 };
 
+/** Only render when there are real subagents — never show an idle Coordinator stub. */
 export const AgentTree: React.FC<AgentTreeProps> = ({ subagents, selectedId, onSelect }) => {
+  if (!subagents.length) return null;
+
   return (
-    <div style={{ margin: '8px 0' }}>
-      <div className="section-label">AGENTS</div>
+    <div className="agent-tree">
+      <div className="section-label">Agents</div>
       <div className="agent-tree-sidebar">
-        <div className="agent-tree-node" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-          <span className="status-dot working" style={{ width: '6px', height: '6px' }} />
-          <span>Orchestrator</span>
-        </div>
+        {subagents.map((sub, idx) => {
+          const isLast = idx === subagents.length - 1;
+          const prefix = isLast ? '\u2514\u2500 ' : '\u251C\u2500 ';
+          const isSelected = sub.id === selectedId;
 
-        {subagents.length === 0 ? (
-          <div style={{ paddingLeft: '22px', color: 'var(--text-muted)', fontSize: '11px', marginTop: '2px' }}>
-            Idle
-          </div>
-        ) : (
-          subagents.map((sub, idx) => {
-            const isLast = idx === subagents.length - 1;
-            const prefix = isLast ? '\u2514\u2500 ' : '\u251C\u2500 ';
-            const isSelected = sub.id === selectedId;
-
-            return (
-              <React.Fragment key={sub.id}>
-                <div
-                  className={`agent-tree-node${isSelected ? ' selected' : ''}`}
-                  onClick={() => onSelect(sub.id)}
-                >
-                  <span className="tree-prefix">{prefix}</span>
-                  <span className="tree-role">{sub.role}</span>
-                  {getStatusIcon(sub.status)}
-                </div>
-                {sub.activity && sub.status === 'running' && (
-                  <div className="tree-activity">{sub.activity}</div>
-                )}
-              </React.Fragment>
-            );
-          })
-        )}
+          return (
+            <React.Fragment key={sub.id}>
+              <div
+                className={`agent-tree-node${isSelected ? ' selected' : ''}`}
+                onClick={() => onSelect(sub.id)}
+              >
+                <span className="tree-prefix">{prefix}</span>
+                <span className="tree-role">{sub.role}</span>
+                {getStatusIcon(sub.status)}
+              </div>
+              {sub.activity && sub.status === 'running' && (
+                <div className="tree-activity">{sub.activity}</div>
+              )}
+            </React.Fragment>
+          );
+        })}
       </div>
     </div>
   );

@@ -53,8 +53,7 @@ func (p *AnthropicProvider) Ping(ctx context.Context) error {
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := llm.NewHTTPClient(8 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("connection failed: %w", err)
 	}
@@ -82,7 +81,7 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]llm.Model, error)
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := llm.NewHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return catalog, nil
@@ -162,7 +161,7 @@ func (p *AnthropicProvider) GetCatalog() []llm.Model {
 // anthropicRequest mirrors the Anthropic /v1/messages request schema.
 type anthropicRequest struct {
 	Model     string             `json:"model"`
-	System    string             `json:"system,omitempty"`
+	System    any                `json:"system,omitempty"` // string or []content blocks (cache)
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 	MaxTokens int                `json:"max_tokens"`
@@ -191,7 +190,13 @@ type anthropicTool struct {
 
 type anthropicResponse struct {
 	Content []anthropicContent `json:"content"`
-	Error   *struct {
+	Usage   *struct {
+		InputTokens              int64 `json:"input_tokens"`
+		OutputTokens             int64 `json:"output_tokens"`
+		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	} `json:"usage,omitempty"`
+	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 }
@@ -243,7 +248,16 @@ func (p *AnthropicProvider) Chat(ctx context.Context, request llm.CompletionRequ
 			out.Messages = append(out.Messages, am)
 		}
 	}
-	out.System = strings.Join(systemParts, "\n\n")
+	systemText := strings.Join(systemParts, "\n\n")
+	if request.EnablePromptCache && systemText != "" {
+		out.System = []map[string]any{{
+			"type":          "text",
+			"text":          systemText,
+			"cache_control": map[string]string{"type": "ephemeral"},
+		}}
+	} else {
+		out.System = systemText
+	}
 
 	for _, t := range request.Tools {
 		out.Tools = append(out.Tools, anthropicTool{
@@ -267,7 +281,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, request llm.CompletionRequ
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := (&http.Client{Timeout: 180 * time.Second}).Do(req)
+	resp, err := (llm.NewHTTPClient(180 * time.Second)).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic request failed: %w", err)
 	}
@@ -304,6 +318,14 @@ func (p *AnthropicProvider) Chat(ctx context.Context, request llm.CompletionRequ
 		}
 	}
 	result.Content = strings.Join(textParts, "")
+	if parsed.Usage != nil {
+		result.Cache = llm.CacheStats{
+			InputTokens:      parsed.Usage.InputTokens,
+			OutputTokens:     parsed.Usage.OutputTokens,
+			CacheReadTokens:  parsed.Usage.CacheReadInputTokens,
+			CacheWriteTokens: parsed.Usage.CacheCreationInputTokens,
+		}
+	}
 	return result, nil
 }
 

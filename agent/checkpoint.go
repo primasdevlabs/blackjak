@@ -18,16 +18,20 @@ import (
 // stopped, or interrupted and later resumed with full context — including
 // across backend restarts.
 type RunCheckpoint struct {
-	RunID       string                 `json:"runId"`
-	Prompt      string                 `json:"prompt"`
-	Workspace   string                 `json:"workspace"`
-	Status      RunStatus              `json:"status"`
-	Messages    []llm.Message          `json:"messages"`
-	Plan        *Plan                  `json:"plan,omitempty"`
-	FileChanges []workspace.FileChange `json:"fileChanges,omitempty"`
-	Subagents   []*Subagent            `json:"subagents,omitempty"`
-	CreatedAt   time.Time              `json:"createdAt"`
-	UpdatedAt   time.Time              `json:"updatedAt"`
+	RunID        string                 `json:"runId"`
+	Prompt       string                 `json:"prompt"`
+	Workspace    string                 `json:"workspace"`
+	Status       RunStatus              `json:"status"`
+	Error        string                 `json:"error,omitempty"`
+	Messages     []llm.Message          `json:"messages"`
+	Plan         *Plan                  `json:"plan,omitempty"`
+	Engineering  *EngineeringState      `json:"engineering,omitempty"`
+	FileChanges  []workspace.FileChange `json:"fileChanges,omitempty"`
+	Subagents    []*Subagent            `json:"subagents,omitempty"`
+	Attachments  []workspace.Attachment `json:"attachments,omitempty"`
+	References   []workspace.WorkspaceReference `json:"references,omitempty"`
+	CreatedAt    time.Time              `json:"createdAt"`
+	UpdatedAt    time.Time              `json:"updatedAt"`
 }
 
 // checkpointDir returns <workspace>/.blackjak/runs.
@@ -48,10 +52,14 @@ func (m *RunManager) SaveCheckpoint(run *Run, messages []llm.Message) {
 		Prompt:      run.Prompt,
 		Workspace:   run.Workspace,
 		Status:      run.Status,
+		Error:       run.Error,
 		Plan:        run.Plan,
+		Engineering: run.Engineering,
 		CreatedAt:   run.CreatedAt,
 		UpdatedAt:   time.Now(),
 		FileChanges: run.FileChanges,
+		Attachments: run.Attachments,
+		References:  run.References,
 	}
 	run.mu.RUnlock()
 	if run.Orchestration != nil {
@@ -60,8 +68,13 @@ func (m *RunManager) SaveCheckpoint(run *Run, messages []llm.Message) {
 		cp.Subagents = run.Subagents
 	}
 
-	cp.Messages = make([]llm.Message, len(messages))
-	copy(cp.Messages, messages)
+	sanitized := ensureToolCallResults(messages)
+	cp.Messages = make([]llm.Message, len(sanitized))
+	copy(cp.Messages, sanitized)
+	// Keep in-memory messages aligned with what we persist.
+	if len(sanitized) != len(messages) {
+		run.SetMessages(sanitized)
+	}
 
 	dir := checkpointDir(run.Workspace)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -159,27 +172,42 @@ func (m *RunManager) restoreRun(cp *RunCheckpoint) *Run {
 
 	orch := NewOrchestrator(cp.RunID, m.broker, m.tracker)
 	for _, s := range cp.Subagents {
+		// Non-terminal subagents cannot continue after restore — mark them stopped.
+		if s != nil {
+			switch s.Status {
+			case SubagentRunning, SubagentQueued, SubagentCreated, SubagentPaused, SubagentWaiting:
+				s.Status = SubagentFailed
+				if s.Error == "" {
+					s.Error = "interrupted by restart"
+				}
+			}
+		}
 		orch.Adopt(s)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	msgs := ensureToolCallResults(cp.Messages)
 	run := &Run{
-		ID:           cp.RunID,
-		Prompt:       cp.Prompt,
-		Workspace:    cp.Workspace,
-		Status:       status,
-		CreatedAt:    cp.CreatedAt,
-		UpdatedAt:    cp.UpdatedAt,
-		Plan:         cp.Plan,
-		Events:       make([]Event, 0),
-		Subagents:    cp.Subagents,
-		FileChanges:  cp.FileChanges,
+		ID:            cp.RunID,
+		Prompt:        cp.Prompt,
+		Workspace:     cp.Workspace,
+		Status:        status,
+		Error:         cp.Error,
+		CreatedAt:     cp.CreatedAt,
+		UpdatedAt:     cp.UpdatedAt,
+		Plan:          cp.Plan,
+		Engineering:   cp.Engineering,
+		Events:        make([]Event, 0),
+		Subagents:     cp.Subagents,
+		FileChanges:   cp.FileChanges,
+		Attachments:   cp.Attachments,
+		References:    cp.References,
 		Orchestration: orch,
-		approvalCh:   make(chan ApprovalResponse, 1),
-		compactCh:    make(chan struct{}, 1),
-		messages:     cp.Messages,
-		ctx:          ctx,
-		cancel:       cancel,
+		approvalCh:    make(chan ApprovalResponse, 1),
+		compactCh:     make(chan struct{}, 1),
+		messages:      msgs,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 	if run.Subagents == nil {
 		run.Subagents = make([]*Subagent, 0)
@@ -207,13 +235,24 @@ func (m *RunManager) PauseRun(id string) bool {
 }
 
 // ResumeRun prepares a paused/cancelled/failed run for re-execution.
-// Runs missing from memory (e.g. after a backend restart) are rebuilt
-// from their on-disk checkpoint. If prompt is non-empty it is appended
-// as a new user message so the user can redirect the resumed run.
-func (m *RunManager) ResumeRun(id string, prompt string) (*Run, error) {
+// Runs missing from memory (e.g. after ClearFinished) are rebuilt from
+// their on-disk checkpoint when workspaceHint is provided. If prompt is
+// non-empty it is appended as a new user message so the user can redirect.
+func (m *RunManager) ResumeRun(id string, prompt string, workspaceHint ...string) (*Run, error) {
 	run, ok := m.GetRun(id)
 	if !ok {
-		return nil, fmt.Errorf("run '%s' not found", id)
+		ws := ""
+		if len(workspaceHint) > 0 {
+			ws = workspaceHint[0]
+		}
+		if ws == "" {
+			return nil, fmt.Errorf("run '%s' not found", id)
+		}
+		cp, err := m.LoadCheckpoint(id, ws)
+		if err != nil {
+			return nil, fmt.Errorf("run '%s' not found", id)
+		}
+		run = m.restoreRun(cp)
 	}
 
 	run.mu.Lock()
@@ -224,14 +263,19 @@ func (m *RunManager) ResumeRun(id string, prompt string) (*Run, error) {
 	}
 	msgs := make([]llm.Message, len(run.messages))
 	copy(msgs, run.messages)
+	ws := run.Workspace
 	run.mu.Unlock()
 
 	if len(msgs) == 0 {
-		cp, err := m.LoadCheckpoint(run.ID, run.Workspace)
+		cp, err := m.LoadCheckpoint(run.ID, ws)
 		if err == nil && len(cp.Messages) > 0 {
 			msgs = cp.Messages
+			if run.Engineering == nil && cp.Engineering != nil {
+				run.Engineering = cp.Engineering
+			}
 		}
 	}
+	msgs = ensureToolCallResults(msgs)
 	if len(msgs) == 0 {
 		return nil, fmt.Errorf("run has no checkpointed context to resume from")
 	}
@@ -242,6 +286,8 @@ func (m *RunManager) ResumeRun(id string, prompt string) (*Run, error) {
 
 	run.ResetContext()
 	run.SetMessages(msgs)
+	run.Error = ""
 	run.SetStatus(RunPending)
+	m.SaveCheckpoint(run, msgs)
 	return run, nil
 }

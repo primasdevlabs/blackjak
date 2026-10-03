@@ -10,6 +10,12 @@ import (
 	"blackjak/workspace"
 )
 
+// RulesProvider supplies always-on rule text for the system prompt.
+type RulesProvider func() string
+
+// SkillProvider supplies an active skill body for the current run (optional).
+type SkillProvider func(run *Run) string
+
 // Agent drives execution of coding tasks with multi-agent orchestration.
 type Agent struct {
 	broker     *EventBroker
@@ -20,6 +26,13 @@ type Agent struct {
 	resolver   ClientResolver
 	policyFn   PolicyResolver
 	persistent *memory.PersistentMemory
+	rulesFn    RulesProvider
+	skillFn    SkillProvider
+	modeFn      func() string
+	askPolicyFn func() string
+	browserFn   func() (enabled bool, allowlist []string)
+	retrieveFn  func(query string, limit int) []string
+	snapshotFn  func() string
 }
 
 // New creates a fully configured Agent. llmClient is used as a fallback when
@@ -56,6 +69,41 @@ func (a *Agent) policy() tools.Policy {
 // SetPersistentMemory installs the durable memory store.
 func (a *Agent) SetPersistentMemory(m *memory.PersistentMemory) {
 	a.persistent = m
+}
+
+// SetRulesProvider installs always-on rules injection.
+func (a *Agent) SetRulesProvider(fn RulesProvider) {
+	a.rulesFn = fn
+}
+
+// SetSkillProvider installs per-run skill injection.
+func (a *Agent) SetSkillProvider(fn SkillProvider) {
+	a.skillFn = fn
+}
+
+// SetModeProvider installs agent mode (ask|plan|agent) for prompt policy.
+func (a *Agent) SetModeProvider(fn func() string) {
+	a.modeFn = fn
+}
+
+// SetAskPolicyProvider installs ask-policy resolution (standard|accept_all).
+func (a *Agent) SetAskPolicyProvider(fn func() string) {
+	a.askPolicyFn = fn
+}
+
+// SetBrowserToolProvider installs beta browser_fetch configuration.
+func (a *Agent) SetBrowserToolProvider(fn func() (enabled bool, allowlist []string)) {
+	a.browserFn = fn
+}
+
+// SetRetriever installs workspace retrieval for prompt enrichment.
+func (a *Agent) SetRetriever(fn func(query string, limit int) []string) {
+	a.retrieveFn = fn
+}
+
+// SetRepoSnapshotProvider installs a lightweight repo snapshot injector.
+func (a *Agent) SetRepoSnapshotProvider(fn func() string) {
+	a.snapshotFn = fn
 }
 
 func (a *Agent) handleCancel(run *Run) {

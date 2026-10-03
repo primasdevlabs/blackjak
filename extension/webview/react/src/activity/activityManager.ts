@@ -305,7 +305,9 @@ export function describeToolCall(tool: string, args?: any): string {
     case 'update_plan':
       return 'Updating plan';
     case 'task_complete':
-      return 'Wrapping up';
+      return 'Completing task';
+    case 'ask_user':
+      return 'Waiting for input';
     default:
       return `Running ${tool}`;
   }

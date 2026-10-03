@@ -29,7 +29,7 @@ class QueueStore {
     }
   }
 
-  async addPrompt(prompt: string, mode: 'plan' | 'code' = 'code', dependencies?: string[]) {
+  async addPrompt(prompt: string, mode: QueuedPrompt['mode'] = 'agent', dependencies?: string[]) {
     try {
       const item = await settingsApi.addToQueue(prompt, mode, dependencies);
       this.queue = [...this.queue, item];

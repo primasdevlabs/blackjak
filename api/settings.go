@@ -40,8 +40,23 @@ const (
 type AgentMode string
 
 const (
-	ModePlan AgentMode = "plan"
+	ModeAsk   AgentMode = "ask"
+	ModePlan  AgentMode = "plan"
+	ModeAgent AgentMode = "agent"
+	// ModeCode is a legacy alias for ModeAgent (accepted on read/write).
 	ModeCode AgentMode = "code"
+)
+
+// AskPolicy controls whether the agent refuses dual-use / security asks
+// in the LLM prompt. Tool guardrails remain enforced either way.
+type AskPolicy string
+
+const (
+	// AskPolicyStandard refuses clearly harmful or unauthorized requests.
+	AskPolicyStandard AskPolicy = "standard"
+	// AskPolicyAcceptAll treats the operator as an authorized security
+	// professional and avoids conversational refusals on red-team topics.
+	AskPolicyAcceptAll AskPolicy = "accept_all"
 )
 
 // GuardrailsConfig controls what the agent is allowed to do.
@@ -86,8 +101,15 @@ type SettingsConfig struct {
 	AutoOpenFile        bool                           `json:"autoOpenFile"`
 	AutoOpenDiff        bool                           `json:"autoOpenDiff"`
 	AskDestructiveOps   bool                           `json:"askDestructiveOps"`
+	AskPolicy           AskPolicy                      `json:"askPolicy"` // standard | accept_all
 	ModelRoutes         map[string]string              `json:"modelRoutes"` // task -> role
 	Guardrails          GuardrailsConfig               `json:"guardrails"`
+	CompactChatDefault  bool                           `json:"compactChatDefault"`
+	ThemeDensity        string                         `json:"themeDensity"` // comfortable | compact
+	TabAutoOpenLimit    int                            `json:"tabAutoOpenLimit"`
+	BetaFlags           map[string]bool                `json:"betaFlags"`
+	ProxyURL            string                         `json:"proxyUrl"`
+	NetworkAllowlist    []string                       `json:"networkAllowlist"`
 }
 
 // SettingsManager thread-safely manages system settings, providers, and masked credentials.
@@ -130,13 +152,14 @@ func NewSettingsManager() *SettingsManager {
 		ReviewModelID:       "claude-sonnet-5",
 		UseSeparateModels:   true,
 		Effort:              EffortMedium,
-		Mode:                ModeCode,
+		Mode:                ModeAgent,
 		ParallelSubagents:   true,
 		MaxSubagents:        4,
 		PromptQueueBehavior: "sequential",
 		AutoOpenFile:        true,
 		AutoOpenDiff:        true,
 		AskDestructiveOps:   true,
+		AskPolicy:           AskPolicyStandard,
 		Guardrails: GuardrailsConfig{
 			Mode:             "supervised",
 			ShellAllowed:     true,
@@ -221,6 +244,9 @@ func (sm *SettingsManager) SetStoragePath(path string) {
 		return
 	}
 	sm.config = loaded
+	sm.config.Mode = NormalizeMode(sm.config.Mode)
+	sm.config.AskPolicy = NormalizeAskPolicy(sm.config.AskPolicy)
+	llm.SetHTTPProxy(sm.config.ProxyURL)
 	sm.initActiveProvider()
 }
 
@@ -270,6 +296,8 @@ func (sm *SettingsManager) GetMaskedConfig() SettingsConfig {
 			StorageMode: v.StorageMode,
 		}
 	}
+	cp.Mode = NormalizeMode(cp.Mode)
+	cp.AskPolicy = NormalizeAskPolicy(cp.AskPolicy)
 	return cp
 }
 
@@ -277,7 +305,10 @@ func (sm *SettingsManager) GetMaskedConfig() SettingsConfig {
 func (sm *SettingsManager) GetConfig() SettingsConfig {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.config
+	cfg := sm.config
+	cfg.Mode = NormalizeMode(cfg.Mode)
+	cfg.AskPolicy = NormalizeAskPolicy(cfg.AskPolicy)
+	return cfg
 }
 
 // ApplyPatch merges only the fields present in the given JSON patch into the
@@ -355,6 +386,12 @@ func (sm *SettingsManager) ApplyPatch(patch map[string]json.RawMessage) {
 	boolean("autoOpenFile", &sm.config.AutoOpenFile)
 	boolean("autoOpenDiff", &sm.config.AutoOpenDiff)
 	boolean("askDestructiveOps", &sm.config.AskDestructiveOps)
+	if raw, ok := patch["askPolicy"]; ok {
+		var v string
+		if json.Unmarshal(raw, &v) == nil {
+			sm.config.AskPolicy = NormalizeAskPolicy(AskPolicy(v))
+		}
+	}
 
 	// Guardrails merge field-by-field so a partial PATCH can't zero out
 	// sibling rules.
@@ -409,6 +446,25 @@ func (sm *SettingsManager) ApplyPatch(patch map[string]json.RawMessage) {
 			sm.config.ModelRoutes = v
 		}
 	}
+
+	boolean("compactChatDefault", &sm.config.CompactChatDefault)
+	str("themeDensity", &sm.config.ThemeDensity)
+	num("tabAutoOpenLimit", &sm.config.TabAutoOpenLimit)
+	str("proxyUrl", &sm.config.ProxyURL)
+	if raw, ok := patch["networkAllowlist"]; ok {
+		var v []string
+		if json.Unmarshal(raw, &v) == nil {
+			sm.config.NetworkAllowlist = v
+		}
+	}
+	if raw, ok := patch["betaFlags"]; ok {
+		var v map[string]bool
+		if json.Unmarshal(raw, &v) == nil && v != nil {
+			sm.config.BetaFlags = v
+		}
+	}
+	sm.config.Mode = NormalizeMode(sm.config.Mode)
+	llm.SetHTTPProxy(sm.config.ProxyURL)
 
 	sm.saveLocked()
 	sm.initActiveProvider()
@@ -472,6 +528,9 @@ func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 	sm.config.AutoOpenFile = updates.AutoOpenFile
 	sm.config.AutoOpenDiff = updates.AutoOpenDiff
 	sm.config.AskDestructiveOps = updates.AskDestructiveOps
+	if updates.AskPolicy != "" {
+		sm.config.AskPolicy = NormalizeAskPolicy(updates.AskPolicy)
+	}
 	if updates.Guardrails.Mode != "" {
 		sm.config.Guardrails = updates.Guardrails
 	}
@@ -484,8 +543,32 @@ func (sm *SettingsManager) UpdateConfig(updates SettingsConfig) {
 	sm.mu.Unlock()
 }
 
+// NormalizeMode maps legacy "code" → "agent".
+func NormalizeMode(m AgentMode) AgentMode {
+	switch m {
+	case ModeCode, ModeAgent:
+		return ModeAgent
+	case ModePlan:
+		return ModePlan
+	case ModeAsk:
+		return ModeAsk
+	default:
+		return ModeAgent
+	}
+}
+
+// NormalizeAskPolicy maps unknown values to standard.
+func NormalizeAskPolicy(p AskPolicy) AskPolicy {
+	switch p {
+	case AskPolicyAcceptAll:
+		return AskPolicyAcceptAll
+	default:
+		return AskPolicyStandard
+	}
+}
+
 // Policy builds the tools.Policy enforced for the next run from current
-// settings. mode=plan forces read-only regardless of the guardrails mode.
+// settings. Ask and Plan force read-only regardless of the guardrails mode.
 func (sm *SettingsManager) Policy() tools.Policy {
 	cfg := sm.GetConfig()
 	p := tools.DefaultPolicy()
@@ -495,7 +578,8 @@ func (sm *SettingsManager) Policy() tools.Policy {
 	case "readonly", "autonomous", "supervised":
 		p.Mode = tools.PolicyMode(g.Mode)
 	}
-	if cfg.Mode == ModePlan {
+	mode := NormalizeMode(cfg.Mode)
+	if mode == ModePlan || mode == ModeAsk {
 		p.Mode = tools.PolicyReadOnly
 	}
 	p.ShellAllowed = g.ShellAllowed

@@ -100,6 +100,10 @@ func (s *SearchTool) Execute(ctx context.Context, args map[string]interface{}) (
 		if info.Size() > 2*1024*1024 {
 			return nil
 		}
+		relSlash, _ := filepath.Rel(s.ws.RootPath, path)
+		if err := DefaultPolicy().CheckRead(filepath.ToSlash(relSlash)); err != nil {
+			return nil
+		}
 		f, err := os.Open(path)
 		if err != nil {
 			return nil

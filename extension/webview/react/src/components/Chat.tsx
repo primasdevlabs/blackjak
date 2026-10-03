@@ -1,27 +1,60 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { ChatMessage } from '../state/agentStore';
 import { Message } from './Message';
 
 interface ChatProps {
   messages: ChatMessage[];
   disabled?: boolean;
+  compact?: boolean;
 }
 
-export const Chat: React.FC<ChatProps> = ({ messages }) => {
+function dedupeAdjacent(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.sender === m.sender &&
+      prev.text.trim() === m.text.trim() &&
+      (prev.kind || 'text') === (m.kind || 'text')
+    ) {
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+export const Chat: React.FC<ChatProps> = ({ messages, compact = false }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const visible = useMemo(() => {
+    const base = dedupeAdjacent(messages);
+    if (!compact) return base;
+    return base.filter((m) => {
+      if (m.sender === 'user') return true;
+      if (m.sender === 'agent' && (m.text?.length || 0) < 400) return true;
+      if (/compact|error|failed|complete|paused/i.test(m.text || '')) return true;
+      return false;
+    });
+  }, [messages, compact]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [visible]);
 
   return (
-    <div className="conversation-scroll-area">
-      {messages.length === 0 ? (
-        <div style={{ color: 'var(--text-muted)', fontSize: '13px', paddingTop: '16px' }}>
-          Give BlackJak a task to get started.
-        </div>
+    <div className={`conversation-scroll-area ${compact ? 'compact-chat' : ''}`}>
+      {visible.length === 0 ? (
+        <div className="chat-empty">Describe a task to begin.</div>
       ) : (
-        messages.map((msg) => <Message key={msg.id} message={msg} />)
+        visible.map((msg, i) => {
+          const prev = visible[i - 1];
+          const showSender =
+            msg.sender !== 'user' &&
+            (!prev || prev.sender === 'user' || prev.kind === 'choice');
+          return <Message key={msg.id} message={msg} showSender={showSender} />;
+        })
       )}
       <div ref={bottomRef} />
     </div>

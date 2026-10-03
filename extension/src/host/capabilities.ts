@@ -31,5 +31,9 @@ export async function detectCapabilities(context: vscode.ExtensionContext): Prom
       fn((vscode as unknown as { scm?: { createSourceControl?: unknown } }).scm?.createSourceControl),
     diffEditor,
     secrets: !!context.secrets,
+    filePicker: fn(vscode.window.showOpenDialog),
+    multiPanel: fn(vscode.window.createWebviewPanel),
+    settingsWindow: fn(vscode.window.createWebviewPanel),
+    activityPanel: fn(vscode.window.createWebviewPanel),
   };
 }

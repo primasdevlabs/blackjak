@@ -1,7 +1,7 @@
 {
   "name": "agent-vscode-extension",
   "displayName": "BlackJak AI Coding Agent",
-  "description": "Zero-configuration IDE Control Plane and Multi-Agent Orchestrator",
+  "description": "Local coding agent with settings, modes, and multi-agent workflows",
   "version": "1.0.0",
   "publisher": "primasdevlabs",
   "engines": {
@@ -45,6 +45,10 @@
       {
         "command": "agent.openSettings",
         "title": "Agent: Open Settings"
+      },
+      {
+        "command": "agent.openActivity",
+        "title": "Agent: Open Activity"
       },
       {
         "command": "agent.showLogs",

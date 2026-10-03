@@ -9,6 +9,7 @@ import {
   IDEHost,
   NotificationLevel,
   OpenFileOptions,
+  PickFilesOptions,
 } from './host';
 import { detectHostName } from './compatibility';
 import { detectCapabilities } from './capabilities';
@@ -209,6 +210,29 @@ export class VSCodeHost implements IDEHost {
       return undefined;
     }
     return this.context.secrets.get(key);
+  }
+
+  async pickFiles(options?: PickFilesOptions): Promise<string[]> {
+    if (!this.info.capabilities.filePicker) {
+      return [];
+    }
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: options?.canSelectMany ?? true,
+      canSelectFolders: options?.canSelectFolders ?? false,
+      canSelectFiles: !(options?.canSelectFolders && !options?.canSelectMany),
+      filters: options?.filters,
+      title: options?.title ?? 'Attach files',
+      openLabel: 'Attach',
+    });
+    return (uris ?? []).map((u) => u.fsPath);
+  }
+
+  async openSettingsWindow(): Promise<void> {
+    await vscode.commands.executeCommand('agent.openSettings');
+  }
+
+  async openActivityPanel(): Promise<void> {
+    await vscode.commands.executeCommand('agent.openActivity');
   }
 
   private toViewColumn(option?: OpenFileOptions['viewColumn']): vscode.ViewColumn {

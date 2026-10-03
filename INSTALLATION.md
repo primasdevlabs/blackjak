@@ -1,11 +1,12 @@
 # Installation & Execution Guide
 
-BlackJak runs in three modes:
+BlackJak runs in four modes:
 
 | Mode | Who it's for | Backend lifecycle |
 |---|---|---|
 | **IDE extension** | End users | Extension spawns and manages the agent binary automatically |
-| **Standalone server + browser UI** | Development, headless use | You run `bin/agent` yourself |
+| **Standalone server + browser UI** | Development, headless use | You run `bin/agent` yourself; browser shell has Chat / Settings / Activity routes |
+| **Native desktop (Tauri)** | Desktop app users | `desktop/` wraps the same React UI and spawns `bin/agent` (`make desktop-dev`) |
 | **Terminal CLI** | Quick prompts, scripting | Single-process interactive session |
 
 ---
@@ -17,9 +18,13 @@ BlackJak runs in three modes:
 | Go | 1.22+ | Building the agent backend |
 | Node.js | 20+ | Building the webview UI and extension |
 | npm | 10+ | Dependency installs |
+| Make (optional on Windows) | any | Or use `.\make` / `.\make.ps1` (ships with the repo) |
 | VS Code-family IDE | engine 1.85+ | Extension mode (VS Code, Cursor, Windsurf, VSCodium, Antigravity, Theia) |
+| Rust + Tauri CLI | stable | Desktop mode (`make desktop-dev`) |
 
-No VS Code-family IDE is needed for standalone or CLI mode.
+No VS Code-family IDE is needed for standalone, desktop, or CLI mode.
+
+Built-in engineering rules (engineering, anti-slop, Go, security, UI) and skills (`/review`, `/verify`, `/explain`) are **embedded in the agent binary** and apply on every fresh install. Workspace files under `.blackjak/rules/` and `.blackjak/skills/` override the same names; they are optional.
 
 ---
 
@@ -35,10 +40,13 @@ cd webview/react && npm install
 cd ../..
 
 # Build everything: Go binary → webview bundle → extension JS
+# Windows (PowerShell): GNU make is often missing — use the repo wrapper:
+.\make build
+# macOS / Linux / Windows with GNU make:
 make build
 ```
 
-`make build` produces:
+`.\make build` / `make build` produces:
 
 ```
 bin/agent.exe                         # backend (Windows)
@@ -49,45 +57,61 @@ extension/webview/react/dist/         # production React bundle
 
 ### Makefile reference
 
+On Windows without GNU `make` on PATH, prefix with `.\` (e.g. `.\make build`). Optional: `winget install ezwinports.make`.
+
 | Target | Action |
 |---|---|
-| `make build` | Build backend, webview UI, and extension |
-| `make vsix` | Build + package `extension/agent-vscode-extension-1.0.0.vsix` |
-| `make test` | `go test ./...` + TypeScript typecheck |
-| `make run` | Standalone backend on `127.0.0.1:47811` |
-| `make ui` | Vite dev server for the webview (`localhost:5173`) |
-| `make clean` | Remove all build artifacts |
+| `.\make build` | Build backend, webview UI, and extension |
+| `.\make vsix` | Build + package `extension/agent-vscode-extension-1.0.0.vsix` |
+| `.\make test` | `go test ./...` + TypeScript typecheck / smoke |
+| `.\make run` | Standalone backend on `127.0.0.1:47811` |
+| `.\make ui` | Vite dev server for the webview (`localhost:5173`) |
+| `.\make desktop-dev` | Tauri desktop shell (requires Rust + Tauri CLI) |
+| `.\make desktop-build` | Production desktop bundle |
+| `.\make clean` | Remove all build artifacts |
+| `.\make help` | List targets |
+
+### Rules & skills
+
+- **Built-in** (always on, shipped in `bin/agent`): engineering, anti-slop, go, security, ui + skills `/review`, `/verify`, `/explain`
+- Project overrides: `.blackjak/rules/*.md` (same name replaces builtin)
+- User rules: Settings → Rules & Policies (stored under `.blackjak/user-rules.json`)
+- Workspace skills: `.blackjak/skills/<name>/SKILL.md` — invoke with `/<name>`; same name overrides builtin
 
 ---
 
 ## 2. Install the extension (IDE mode)
 
-### 2a. Package the VSIX
+### 2a. Build + install (recommended on Windows)
 
-```bash
-cd extension
-npx @vscode/vsce package --allow-missing-repository
-# → agent-vscode-extension-1.0.0.vsix (~6.5 MB)
+```powershell
+.\make install-extension
 ```
 
-The `.vscodeignore` already excludes sources, `node_modules`, maps, and dev artifacts — the package ships only `out/`, `webview/react/dist`, `resources/`, `ws`, and the agent binary.
+This builds the Go agent, React UI, and extension host, packages `extension/agent-vscode-extension-1.0.0.vsix`, then installs into every IDE CLI it finds (Cursor, VS Code, Antigravity, Windsurf).
 
-### 2b. Install per IDE
+### 2b. Package only / install per IDE
+
+```bash
+.\make vsix
+# or: cd extension && npx @vscode/vsce package --allow-missing-repository
+# → extension/agent-vscode-extension-1.0.0.vsix (~6.8 MB)
+```
 
 ```bash
 # VS Code
-code --install-extension agent-vscode-extension-1.0.0.vsix
+code --install-extension extension/agent-vscode-extension-1.0.0.vsix --force
 
 # Cursor
-cursor --install-extension agent-vscode-extension-1.0.0.vsix
+cursor --install-extension extension/agent-vscode-extension-1.0.0.vsix --force
 
 # Windsurf
-windsurf --install-extension agent-vscode-extension-1.0.0.vsix
+windsurf --install-extension extension/agent-vscode-extension-1.0.0.vsix --force
 
 # Antigravity IDE — IMPORTANT: pass --extensions-dir, its CLI defaults to ~/.windsurf
 "%LOCALAPPDATA%\Programs\Antigravity IDE\bin\antigravity-ide.cmd" ^
   --extensions-dir "%USERPROFILE%\.antigravity-ide\extensions" ^
-  --install-extension agent-vscode-extension-1.0.0.vsix --force
+  --install-extension extension\agent-vscode-extension-1.0.0.vsix --force
 ```
 
 Or install from inside the IDE: Extensions view (`Ctrl+Shift+X`) → `⋯` menu → **Install from VSIX…** → pick the file.
@@ -134,6 +158,17 @@ bin\agent.exe --server --port 47811 --workspace C:\path\to\project
 bin\agent.exe --server --port 0 --workspace .
 ```
 
+### Native desktop (Tauri)
+
+Requires Rust toolchain and Tauri CLI. From the repo root:
+
+```bash
+make desktop-dev     # builds backend + UI, then tauri dev
+make desktop-build   # production bundle
+```
+
+On first launch the app offers a **workspace folder picker**, persists the path in the app config directory, allocates a **free port**, spawns `bin/agent`, and injects `window.__AGENT_PORT__` into the webview. Later you can change workspace via the Tauri `pick_workspace` command (restarts the agent). See [desktop/README.md](desktop/README.md).
+
 ### Terminal CLI (no server, no UI)
 
 ```bash
@@ -141,6 +176,15 @@ bin\agent.exe --cli --workspace .
 ```
 
 Interactive prompt loop; approvals are auto-granted. Type `exit` to quit. LLM provider is resolved from env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `GEMINI_API_KEY` (first match wins).
+
+---
+
+## Manual acceptance (engineering agent)
+
+1. Non-trivial Go change: agent inspects → edits → runs tests → self-review → `task_complete`.
+2. Trivial question: no write/verify gates unless files are mutated.
+3. Insecure auth request: pushback / secure alternative in reasoning (rules + identity).
+4. Desktop: launches UI, agent on injected port, workspace picker works.
 
 ---
 

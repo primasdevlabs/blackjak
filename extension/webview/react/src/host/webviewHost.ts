@@ -4,6 +4,7 @@ import {
   NotificationLevel,
   OpenEditorsState,
   OpenFileOptions,
+  PickFilesOptions,
   WorkspaceState,
 } from './agentHost';
 
@@ -121,5 +122,18 @@ export class WebviewAgentHost implements AgentHost {
   async getSecret(key: string): Promise<string | undefined> {
     const res = await this.request<{ secret?: string }>('getSecret', { key });
     return res?.secret;
+  }
+
+  async pickFiles(options?: PickFilesOptions): Promise<string[]> {
+    const res = await this.request<{ paths?: string[] }>('pickFiles', options as Record<string, unknown>);
+    return res?.paths ?? [];
+  }
+
+  openSettingsWindow(): void {
+    this.postMessage({ command: 'openSettingsWindow' });
+  }
+
+  openActivityPanel(): void {
+    this.postMessage({ command: 'openActivityPanel' });
   }
 }

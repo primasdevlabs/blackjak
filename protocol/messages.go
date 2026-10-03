@@ -28,6 +28,13 @@ const (
 	// ClientMsgHostHello is sent by a host adapter immediately after connecting
 	// to negotiate host identity and IDE capabilities. Data is a HostInfo.
 	ClientMsgHostHello ClientMessageType = "host.hello"
+	// ClientMsgSettingsGet requests a settings snapshot push.
+	ClientMsgSettingsGet ClientMessageType = "settings.get"
+	// ClientMsgContextStatus requests current context budget/cache stats.
+	ClientMsgContextStatus ClientMessageType = "context.status"
+	ClientMsgSkillsList    ClientMessageType = "skills.list"
+	ClientMsgRulesList     ClientMessageType = "rules.list"
+	ClientMsgActivityTail  ClientMessageType = "activity.tail"
 )
 
 // ClientMessage represents an incoming message from a host adapter or UI.

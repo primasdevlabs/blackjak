@@ -72,21 +72,47 @@ func (r *Registry) Schemas() []llm.Tool {
 	return defs
 }
 
+// FilterKeep retains only tools whose names are in allow. Empty allow keeps all.
+// Meta tools (not in the registry) are unaffected.
+func (r *Registry) FilterKeep(allow []string) {
+	if len(allow) == 0 {
+		return
+	}
+	keep := make(map[string]struct{}, len(allow))
+	for _, n := range allow {
+		keep[n] = struct{}{}
+	}
+	for name := range r.tools {
+		if _, ok := keep[name]; !ok {
+			delete(r.tools, name)
+		}
+	}
+}
+
 // DefaultRegistry builds the standard tool set for a workspace. The approval
 // callback is invoked before destructive shell commands and file deletions.
 // The policy enforces guardrails inside the tools themselves — hard blocks
 // (deny-listed commands, protected paths, read-only mode) cannot be approved
 // away.
 func DefaultRegistry(ws *workspace.Workspace, approve ApprovalFunc, mem Store, policy Policy) *Registry {
+	return DefaultRegistryWithAsk(ws, approve, nil, mem, policy)
+}
+
+// DefaultRegistryWithAsk is DefaultRegistry plus an optional ask_user tool.
+func DefaultRegistryWithAsk(ws *workspace.Workspace, approve ApprovalFunc, ask AskUserFunc, mem Store, policy Policy) *Registry {
 	r := NewRegistry()
 	fs := &FilesystemTool{ws: ws, policy: policy}
 	r.Register(fs)
 	r.Register(&ShellTool{ws: ws, approve: approve, policy: policy})
 	r.Register(&SearchTool{ws: ws})
 	r.Register(&GitTool{ws: ws, approve: approve, policy: policy})
-	r.Register(&TestTool{ws: ws, policy: policy})
+	r.Register(&TestTool{ws: ws, approve: approve, policy: policy})
+	r.Register(&VersionsTool{ws: ws})
 	if mem != nil {
 		r.Register(&MemoryTool{store: mem})
+	}
+	if ask != nil {
+		r.Register(&AskUserTool{Ask: ask})
 	}
 	return r
 }

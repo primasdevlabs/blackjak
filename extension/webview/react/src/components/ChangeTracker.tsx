@@ -39,7 +39,7 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
   // Resolve agent role names
   const getAgentLabel = (agentId: string): string => {
     const sub = subagents.find((s) => s.id === agentId);
-    return sub ? sub.role.charAt(0).toUpperCase() + sub.role.slice(1) : 'Orchestrator';
+    return sub ? sub.role.charAt(0).toUpperCase() + sub.role.slice(1) : 'Coordinator';
   };
 
   const getTypeLetter = (type: string): string => {

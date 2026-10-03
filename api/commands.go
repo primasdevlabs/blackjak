@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 
@@ -14,6 +15,20 @@ import (
 	"blackjak/protocol"
 	"blackjak/workspace"
 )
+
+func execCommand(dir string, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
 
 // estimateTokens approximates the token footprint of a message list (~4 chars/token).
 func estimateTokens(msgs []llm.Message) int {
@@ -333,6 +348,38 @@ func (cr *CommandRegistry) registerDefaults() {
 				return map[string]interface{}{"status": "cancelled", "runId": run.ID}, nil
 			}
 			return map[string]interface{}{"status": string(run.Status), "runId": run.ID}, nil
+		},
+	})
+
+	cr.Register(AgentCommand{
+		Name:        "pr",
+		Description: "Summarize current git changes for a pull request",
+		Execute: func(s *Server, args map[string]interface{}) (interface{}, error) {
+			run := s.runManager.LatestRun()
+			statusOut, _ := execCommand(s.workspace.RootPath, "git", "status", "--short")
+			diffOut, _ := execCommand(s.workspace.RootPath, "git", "diff", "--stat")
+			logOut, _ := execCommand(s.workspace.RootPath, "git", "log", "-5", "--oneline")
+			var changed []string
+			if run != nil {
+				for _, fc := range run.FileChanges {
+					changed = append(changed, string(fc.Type)+" "+fc.Path)
+				}
+			}
+			title := "Update project"
+			if run != nil && strings.TrimSpace(run.Prompt) != "" {
+				title = truncateStr(strings.TrimSpace(run.Prompt), 72)
+			}
+			body := fmt.Sprintf("## Summary\n%s\n\n## Agent file changes\n%s\n\n## Git status\n```\n%s\n```\n\n## Diffstat\n```\n%s\n```\n\n## Recent commits\n```\n%s\n```\n",
+				title,
+				strings.Join(changed, "\n"),
+				strings.TrimSpace(statusOut),
+				strings.TrimSpace(diffOut),
+				strings.TrimSpace(logOut),
+			)
+			return map[string]interface{}{
+				"title": title,
+				"body":  body,
+			}, nil
 		},
 	})
 }

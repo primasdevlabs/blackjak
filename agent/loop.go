@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	bjctx "blackjak/context"
 	"blackjak/llm"
 	"blackjak/memory"
 	"blackjak/tools"
@@ -58,6 +59,38 @@ func approvalGate(rm *RunManager, run *Run) tools.ApprovalFunc {
 	}
 }
 
+// askUserGate adapts RunManager approval into a walkthrough question prompt.
+// The selected answer is returned via ApprovalResponse.Reason.
+func askUserGate(rm *RunManager, run *Run) tools.AskUserFunc {
+	return func(ctx context.Context, question string, options []string, allowOther bool) (string, error) {
+		if rm == nil {
+			return "", fmt.Errorf("no run manager for ask_user")
+		}
+		req := ApprovalRequest{
+			ID:          fmt.Sprintf("ask_%d", time.Now().UnixNano()),
+			RunID:       run.ID,
+			Operation:   "ask_user",
+			Description: question,
+			Details: map[string]any{
+				"kind":       "walkthrough",
+				"options":    options,
+				"allowOther": allowOther,
+			},
+		}
+		granted, reason, err := rm.RequestApproval(ctx, run, req)
+		if err != nil {
+			return "", err
+		}
+		if !granted {
+			return "", fmt.Errorf("user dismissed question: %s", reason)
+		}
+		if strings.TrimSpace(reason) == "" {
+			return "", fmt.Errorf("empty answer")
+		}
+		return reason, nil
+	}
+}
+
 // toolOutcome is the serialized result fed back to the model.
 func toolOutcome(result interface{}, err error) string {
 	if err != nil {
@@ -95,15 +128,26 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 	policy := a.policy()
 	working := memory.NewWorkingMemory()
 	registry := a.buildRegistry(run, rm, working, policy)
-	toolSchemas := append(registry.Schemas(), delegateSchema(), taskCompleteSchema())
+	toolSchemas := append(registry.Schemas(), planSchema(), delegateSchema(), taskCompleteSchema())
+
+	if run.Engineering == nil {
+		run.Engineering = NewEngineeringState(run.Prompt)
+	}
+	a.emitPhase(run)
 
 	systemPrompt := a.buildSystemPrompt(run, working, policy)
 	messages := run.GetMessages()
 	resumed := len(messages) > 0
 	if !resumed {
+		userContent := run.Prompt
+		if a.retrieveFn != nil {
+			if hits := a.retrieveFn(run.Prompt, 6); len(hits) > 0 {
+				userContent = "Retrieved workspace context:\n- " + strings.Join(hits, "\n- ") + "\n\n" + run.Prompt
+			}
+		}
 		messages = []llm.Message{
 			{Role: llm.RoleSystem, Content: systemPrompt},
-			{Role: llm.RoleUser, Content: run.Prompt},
+			{Role: llm.RoleUser, Content: userContent},
 		}
 		run.SetMessages(messages)
 	} else {
@@ -133,14 +177,19 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 				"runId":   run.ID,
 				"message": "Run paused — context checkpointed",
 			})
+			// Persist terminal status (defer may have written "running").
+			checkpointRun(rm, run, 0, run.GetMessages())
 			return nil
 		}
 		if runCtx.Err() != nil {
 			a.handleCancel(run)
+			checkpointRun(rm, run, 0, run.GetMessages())
 			return runCtx.Err()
 		}
+		run.Error = err.Error()
 		a.emitEvent(run, "", EventRunFailed, map[string]interface{}{"error": err.Error()})
 		run.SetStatus(RunFailed)
+		checkpointRun(rm, run, 0, run.GetMessages())
 		return err
 	}
 
@@ -154,6 +203,7 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 		"subagents":       len(run.Subagents),
 		"steps":           countToolEvents(run),
 	})
+	checkpointRun(rm, run, 0, run.GetMessages())
 	return nil
 }
 
@@ -208,13 +258,24 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			return completionResult{}, errRunPaused
 		}
 
-		// Service a queued /compact request between iterations.
-		if run.TakeCompactionRequest() {
+		// Manual /compact or auto-compact at ≥80% usable pressure.
+		compactor := bjctx.NewCompactor(128000)
+		budget := compactor.CalculateBudget(estimateMessageTokens(messages))
+		shouldAuto := depth == 0 && compactor.ShouldCompact(budget)
+		if run.TakeCompactionRequest() || shouldAuto {
 			before := estimateMessageTokens(messages)
 			messages = a.compactMessages(ctx, run, client, messages)
 			after := estimateMessageTokens(messages)
 			run.SetMessages(messages)
 			checkpointRun(rm, run, depth, messages)
+			a.emitEvent(run, "", EventContextCompacted, map[string]interface{}{
+				"compacted":    true,
+				"auto":         shouldAuto,
+				"tokensBefore": before,
+				"tokensAfter":  after,
+				"tokensSaved":  before - after,
+				"pressure":     budget.Pressure,
+			})
 			a.emitEvent(run, "", EventContextUpdated, map[string]interface{}{
 				"compacted":    true,
 				"tokensBefore": before,
@@ -228,12 +289,21 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 		})
 
 		resp, err := client.Complete(ctx, &llm.CompletionRequest{
-			Messages:  messages,
-			Tools:     toolSchemas,
-			MaxTokens: defaultMaxTokens,
+			Messages:          messages,
+			Tools:             toolSchemas,
+			MaxTokens:         defaultMaxTokens,
+			EnablePromptCache: true,
 		})
 		if err != nil {
 			return completionResult{}, fmt.Errorf("llm completion failed: %w", err)
+		}
+		if resp.Cache.InputTokens > 0 || resp.Cache.CacheReadTokens > 0 || resp.Cache.CacheWriteTokens > 0 {
+			a.emitEvent(run, "", EventCacheStats, map[string]interface{}{
+				"inputTokens":      resp.Cache.InputTokens,
+				"outputTokens":     resp.Cache.OutputTokens,
+				"cacheReadTokens":  resp.Cache.CacheReadTokens,
+				"cacheWriteTokens": resp.Cache.CacheWriteTokens,
+			})
 		}
 
 		if resp.Content != "" {
@@ -264,6 +334,10 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 
 		for _, call := range resp.ToolCalls {
 			if ctx.Err() != nil || run.IsPauseRequested() {
+				// Close out any unanswered tool_calls so resume stays valid.
+				messages = ensureToolCallResults(messages)
+				run.SetMessages(messages)
+				checkpointRun(rm, run, depth, messages)
 				if run.IsPauseRequested() {
 					return completionResult{}, errRunPaused
 				}
@@ -318,14 +392,62 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 	return completionResult{Summary: fmt.Sprintf("Reached the configured step limit (%d)", maxSteps)}, nil
 }
 
+// agentMode returns the current mode string (ask|plan|agent).
+func (a *Agent) agentMode() string {
+	if a.modeFn != nil {
+		return a.modeFn()
+	}
+	return "agent"
+}
+
+// emitPhase publishes the current engineering phase snapshot.
+func (a *Agent) emitPhase(run *Run) {
+	if run == nil || run.Engineering == nil {
+		return
+	}
+	a.emitEvent(run, "", EventAgentPhase, run.Engineering.Snapshot())
+}
+
 // executeToolCall dispatches one tool call. Returns (result, done, err).
 // done is non-nil when the run should finish.
 func (a *Agent) executeToolCall(ctx context.Context, run *Run, rm *RunManager,
 	registry *tools.Registry, call llm.ToolCall, args map[string]interface{},
 	depth int, toolSchemas []llm.Tool) (interface{}, *completionResult, error) {
 
+	mode := a.agentMode()
+	eng := run.Engineering
+	if eng == nil {
+		eng = NewEngineeringState(run.Prompt)
+		run.Engineering = eng
+	}
+
+	// Hybrid write gate: non-trivial Agent tasks must inspect before mutating.
+	if err := checkWriteGate(eng, mode, call.Name, args); err != nil {
+		return nil, nil, err
+	}
+
 	switch call.Name {
 	case "task_complete":
+		if err := checkCompleteGate(eng, mode); err != nil {
+			return nil, nil, err
+		}
+		if depth == 0 && needsAutoReview(eng, mode) {
+			review, revErr := a.runSelfReview(ctx, run)
+			if revErr != nil {
+				return nil, nil, fmt.Errorf("engineering gate: self-review failed: %w", revErr)
+			}
+			eng.MarkReview(review)
+			a.emitPhase(run)
+			if review == nil || !strings.EqualFold(review.Verdict, "pass") {
+				eng.IncReviewRetry()
+				findings, _ := json.Marshal(review)
+				return map[string]interface{}{
+					"blocked": true,
+					"reason":  "self-review requested revisions",
+					"review":  review,
+				}, nil, fmt.Errorf("engineering gate: self-review verdict=revise — address findings then verify again before task_complete: %s", string(findings))
+			}
+		}
 		var recs []string
 		if raw, ok := args["recommendations"].([]interface{}); ok {
 			for _, r := range raw {
@@ -334,6 +456,8 @@ func (a *Agent) executeToolCall(ctx context.Context, run *Run, rm *RunManager,
 				}
 			}
 		}
+		eng.SetPhase(PhaseDone)
+		a.emitPhase(run)
 		done := &completionResult{Summary: argStr(args, "summary"), Recommendations: recs}
 		return map[string]interface{}{"summary": done.Summary, "recommendations": recs}, done, nil
 
@@ -350,6 +474,8 @@ func (a *Agent) executeToolCall(ctx context.Context, run *Run, rm *RunManager,
 		run.Plan.Steps = steps
 		run.Plan.CurrentStep = current
 		run.mu.Unlock()
+		eng.MarkPlan()
+		a.emitPhase(run)
 		a.emitEvent(run, "", EventAgentPlan, run.Plan)
 		return map[string]interface{}{"steps": len(steps), "currentStep": current}, nil, nil
 
@@ -364,8 +490,97 @@ func (a *Agent) executeToolCall(ctx context.Context, run *Run, rm *RunManager,
 		}
 		result, err := tool.Execute(ctx, args)
 		a.trackToolSideEffects(run, rm, call.Name, args, result, err)
+		a.recordEngineeringEvidence(run, call.Name, args, result, err)
 		return result, nil, err
 	}
+}
+
+// recordEngineeringEvidence updates phase/evidence from successful tool results.
+func (a *Agent) recordEngineeringEvidence(run *Run, toolName string, args map[string]interface{}, result interface{}, execErr error) {
+	eng := run.Engineering
+	if eng == nil || execErr != nil {
+		return
+	}
+	changed := false
+	if isInspectToolCall(toolName, args) {
+		eng.MarkInspect()
+		changed = true
+		// Progressive retrieval: refresh working-memory hits after inspect.
+		if a.retrieveFn != nil {
+			// working memory lives per-loop; stash on run via persistent-style key in emit.
+			if hits := a.retrieveFn(run.Prompt, 4); len(hits) > 0 {
+				a.emitEvent(run, "", EventContextUpdated, map[string]interface{}{
+					"progressiveRetrieve": hits,
+				})
+			}
+		}
+	}
+	if isMutatingToolCall(toolName, args) {
+		eng.MarkImplement()
+		changed = true
+	}
+	if toolName == "test" {
+		if toolResultSucceeded(result) {
+			eng.MarkVerify()
+			changed = true
+			a.emitEvent(run, "", EventTestPassed, map[string]interface{}{"tool": "test", "result": result})
+		} else {
+			a.emitEvent(run, "", EventTestFailed, map[string]interface{}{"tool": "test", "result": result})
+		}
+	}
+	if toolName == "shell" && toolResultSucceeded(result) {
+		cmd := argStr(args, "command")
+		if isVerifyShellCommand(cmd) {
+			eng.MarkVerify()
+			changed = true
+		}
+	}
+	if changed {
+		a.emitPhase(run)
+	}
+}
+
+// runSelfReview performs a structured critical review of tracked changes.
+func (a *Agent) runSelfReview(ctx context.Context, run *Run) (*ReviewResult, error) {
+	eng := run.Engineering
+	if eng != nil && !eng.CanRetryReview() {
+		return nil, fmt.Errorf("self-review retry limit reached")
+	}
+
+	client := a.resolveClient("review")
+	if client == nil {
+		client = a.resolveClient("thinking")
+	}
+	if client == nil {
+		// No review model: synthesize a pass with explicit note (evidence still required for verify).
+		return &ReviewResult{
+			SolvesProblem: true,
+			Verdict:       "pass",
+			Findings:      []string{"review model unavailable — skipped structured review"},
+		}, nil
+	}
+
+	var changes strings.Builder
+	for _, fc := range run.FileChanges {
+		fmt.Fprintf(&changes, "- %s (%s)\n", fc.Path, fc.Type)
+	}
+	prompt := `You are performing a critical engineering self-review of Blackjak's own changes.
+Respond with ONLY a JSON object (no markdown) matching:
+{"solvesProblem":bool,"unnecessaryComplexity":bool,"securityIssues":[],"races":[],"leaks":[],"contractBreaks":[],"aiSlopRisk":bool,"findings":[],"verdict":"pass"|"revise"}
+Ask: Does this solve the problem? Unnecessary complexity? Security/race/leak/contract issues? Does it look like AI slop rather than engineered code?
+Be strict. Verdict "revise" if any serious issue.`
+
+	resp, err := client.Complete(ctx, &llm.CompletionRequest{
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: prompt},
+			{Role: llm.RoleUser, Content: fmt.Sprintf("User goal:\n%s\n\nChanged files:\n%s", run.Prompt, changes.String())},
+		},
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseReviewResult(resp.Content)
 }
 
 // toStringSlice converts a JSON array arg to []string.
@@ -426,6 +641,9 @@ func (a *Agent) executeDelegate(ctx context.Context, run *Run, rm *RunManager,
 
 		subWorking := memory.NewWorkingMemory()
 		subRegistry := a.buildRegistry(run, rm, subWorking, a.policy())
+		if allow := RoleToolAllowlist(role); len(allow) > 0 {
+			subRegistry.FilterKeep(allow)
+		}
 		subTools := append(subRegistry.Schemas(), planSchema(), taskCompleteSchema())
 
 		subPrompt := fmt.Sprintf("%s\n\nYou are a %s subagent. Complete this task and report results:\n\n%s",
@@ -530,7 +748,18 @@ func (a *Agent) buildRegistry(run *Run, rm *RunManager, working *memory.WorkingM
 	if a.persistent != nil {
 		store = a.persistent
 	}
-	return tools.DefaultRegistry(workspace.New(run.Workspace), approve, store, policy)
+	var ask tools.AskUserFunc
+	if rm != nil {
+		ask = askUserGate(rm, run)
+	}
+	reg := tools.DefaultRegistryWithAsk(workspace.New(run.Workspace), approve, ask, store, policy)
+	if a.browserFn != nil {
+		enabled, allow := a.browserFn()
+		if enabled {
+			reg.Register(&tools.BrowserTool{Enabled: true, Allowlist: allow})
+		}
+	}
+	return reg
 }
 
 // resolveClient returns the client for a role, falling back to coding.
@@ -549,8 +778,70 @@ func (a *Agent) resolveClient(role string) llm.Client {
 // memory and the active guardrail contract, so the model knows its limits
 // before it tries a call that will be rejected.
 func (a *Agent) buildSystemPrompt(run *Run, working *memory.WorkingMemory, policy tools.Policy) string {
+	mode := "agent"
+	if a.modeFn != nil {
+		mode = a.modeFn()
+	}
+	askPolicy := "standard"
+	if a.askPolicyFn != nil {
+		askPolicy = a.askPolicyFn()
+	}
+	rulesText := ""
+	if a.rulesFn != nil {
+		rulesText = a.rulesFn()
+	}
+	skillText := ""
+	if a.skillFn != nil {
+		skillText = a.skillFn(run)
+	}
+	var refs []string
+	for _, r := range run.References {
+		refs = append(refs, r.Path)
+	}
+	var recentDiffs strings.Builder
+	for i, fc := range run.FileChanges {
+		if i >= 12 {
+			break
+		}
+		fmt.Fprintf(&recentDiffs, "- %s (%s)\n", fc.Path, fc.Type)
+	}
+	var workingBits []string
+	if working != nil {
+		if v, _ := working.Get(context.Background(), "retrieved"); v != nil {
+			if s, ok := v.(string); ok && s != "" {
+				workingBits = append(workingBits, s)
+			}
+		}
+	}
+	memText := ""
+	if a.snapshotFn != nil {
+		if snap := a.snapshotFn(); snap != "" {
+			memText = snap
+		}
+	}
+	built := bjctx.NewBuilder().Build(bjctx.BuildInput{
+		SystemPrompt: a.context.AssembleSystemPrompt(run.Workspace),
+		UserRules:    rulesText,
+		SkillBody:    skillText,
+		ModePolicy:   bjctx.ModePolicyText(mode),
+		References:   refs,
+		RecentDiffs:  recentDiffs.String(),
+		Retrieved:    workingBits,
+		Memory:       memText,
+		UserPrompt:   "",
+	})
+
 	var b strings.Builder
-	b.WriteString(a.context.AssembleSystemPrompt(run.Workspace))
+	b.WriteString(built.System)
+	if built.User != "" {
+		// Builder puts refs/retrieved/diffs into User; fold into system for the agent loop.
+		b.WriteString("\n\n")
+		b.WriteString(built.User)
+	}
+
+	b.WriteString("\n\n# Ask Policy\n")
+	b.WriteString(bjctx.AskPolicyText(askPolicy))
+	b.WriteString("\n")
 
 	b.WriteString("\n\nGuardrails currently in effect:\n")
 	switch policy.Mode {
@@ -637,7 +928,7 @@ func (a *Agent) compactMessages(ctx context.Context, run *Run, client llm.Client
 	if client != nil {
 		resp, err := client.Complete(ctx, &llm.CompletionRequest{
 			Messages: []llm.Message{
-				{Role: llm.RoleSystem, Content: "Summarize the following agent conversation history for continuity. Preserve: files read/modified, decisions made, commands run and their outcomes, and anything still pending. Be terse."},
+				{Role: llm.RoleSystem, Content: "Summarize agent history for continuity as structured bullets: Objective, Decisions, Files touched, Commands/tests and outcomes, Pending work, Risks. Be terse. Do not invent results."},
 				{Role: llm.RoleUser, Content: transcript.String()},
 			},
 			MaxTokens: 1024,

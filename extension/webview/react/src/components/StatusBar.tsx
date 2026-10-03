@@ -1,7 +1,8 @@
 import React from 'react';
 import { ConnectionStatus } from '../api/websocket';
 import { RunStatus } from '../types/events';
-import { CpuChipIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { StopIcon } from '@heroicons/react/24/outline';
+import { ActivityIndicator } from './ActivityIndicator';
 
 interface StatusBarProps {
   connectionStatus: ConnectionStatus;
@@ -10,6 +11,10 @@ interface StatusBarProps {
   onCancel: () => void;
 }
 
+/**
+ * Composer-adjacent run controls: Working / Stop sit above the input,
+ * not in the top chrome. Connection problems share the same strip.
+ */
 export const StatusBar: React.FC<StatusBarProps> = ({
   connectionStatus,
   runStatus,
@@ -17,33 +22,47 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   onCancel,
 }) => {
   const isRunning = runStatus === 'running' || runStatus === 'waiting' || runStatus === 'pending';
+  const connectionIssue =
+    connectionStatus === 'disconnected' ||
+    connectionStatus === 'connecting' ||
+    connectionStatus === 'reconnecting';
+
+  if (!connectionIssue && !isRunning) {
+    return null;
+  }
 
   return (
-    <header className="status-bar">
-      <div className="status-title">
-        <CpuChipIcon className="icon title-icon" />
-        <span className="title-text">AI Agent</span>
-      </div>
-
-      <div className="status-badges">
-        <div className={`badge connection-${connectionStatus}`}>
-          <span className="dot"></span>
-          <span>{connectionStatus}</span>
-        </div>
-
-        {runStatus && (
-          <div className={`badge run-${runStatus}`}>
-            <span>{runStatus.toUpperCase()}</span>
+    <div className="composer-run-bar" role="status">
+      <div className="composer-run-bar-left">
+        {connectionIssue && (
+          <div className={`composer-run-conn connection-${connectionStatus}`} title="Agent connection">
+            <span className="dot" />
+            <span>
+              {connectionStatus === 'disconnected'
+                ? 'Disconnected'
+                : connectionStatus === 'reconnecting'
+                  ? 'Reconnecting…'
+                  : 'Connecting…'}
+            </span>
           </div>
         )}
 
-        {isRunning && activeRunId && (
-          <button className="cancel-btn" onClick={onCancel}>
-            <XMarkIcon className="icon btn-icon" />
-            <span>Stop</span>
-          </button>
+        {isRunning && (
+          <div className="composer-run-status">
+            <ActivityIndicator state="live" />
+            <span className="live-activity-shimmer">
+              {runStatus === 'waiting' ? 'Waiting' : 'Working'}
+            </span>
+          </div>
         )}
       </div>
-    </header>
+
+      {isRunning && activeRunId && (
+        <button type="button" className="composer-run-stop" onClick={onCancel} title="Stop (Ctrl+Shift+X)">
+          <StopIcon className="icon-sm" />
+          <span>Stop</span>
+        </button>
+      )}
+    </div>
   );
 };

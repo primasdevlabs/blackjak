@@ -39,6 +39,17 @@ export interface HostCapabilities {
   scm: boolean;
   diffEditor: boolean;
   secrets: boolean;
+  filePicker: boolean;
+  multiPanel: boolean;
+  settingsWindow: boolean;
+  activityPanel: boolean;
+}
+
+export interface PickFilesOptions {
+  canSelectMany?: boolean;
+  canSelectFolders?: boolean;
+  filters?: { [name: string]: string[] };
+  title?: string;
 }
 
 export interface HostInfo {
@@ -92,4 +103,9 @@ export interface IDEHost {
   // Secrets
   storeSecret(key: string, value: string): Promise<void>;
   getSecret(key: string): Promise<string | undefined>;
+
+  // Panels / pickers (Phase 0 host contract for multi-shell UI)
+  pickFiles(options?: PickFilesOptions): Promise<string[]>;
+  openSettingsWindow(): Promise<void>;
+  openActivityPanel(): Promise<void>;
 }

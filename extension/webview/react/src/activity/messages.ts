@@ -1,60 +1,59 @@
 import { ActivityCategory } from './activityTypes';
 
+/** Professional status lines shown while the agent is working. */
 export const ACTIVITY_MESSAGES: Record<ActivityCategory, string[]> = {
   orchestrating: [
-    "Orchestrating the next move…",
-    "Planning the route through the code…",
-    "Putting the pieces in order…",
-    "Setting up the next phase…",
-    "Balancing execution steps…",
+    'Coordinating next steps…',
+    'Preparing the execution plan…',
+    'Sequencing work items…',
+    'Initializing the next phase…',
+    'Organizing task dependencies…',
   ],
 
   exploring: [
-    "Stargazing at the codebase…",
-    "Following the trail…",
-    "Mapping the territory…",
-    "Looking under the hood…",
-    "Scanning project files…",
-    "Examining module boundaries…",
+    'Reviewing project structure…',
+    'Inspecting relevant files…',
+    'Mapping module dependencies…',
+    'Scanning workspace files…',
+    'Examining code boundaries…',
   ],
 
   thinking: [
-    "Thinking through the dependencies…",
-    "Connecting a few loose ends…",
-    "Reading between the lines…",
-    "Synthesizing context…",
-    "Tracing logical pathways…",
+    'Analyzing dependencies…',
+    'Evaluating design options…',
+    'Synthesizing context…',
+    'Tracing control flow…',
+    'Assessing implementation impact…',
   ],
 
   debugging: [
-    "Tracing the rabbit hole…",
-    "Narrowing things down…",
-    "Hunting for the mismatch…",
-    "Untangling this one…",
-    "Cross-checking the evidence…",
-    "Circling back to the failing test…",
+    'Isolating the failure…',
+    'Narrowing the root cause…',
+    'Comparing expected and actual behavior…',
+    'Reviewing error evidence…',
+    'Checking related test failures…',
   ],
 
   testing: [
-    "Putting the hypothesis to the test…",
-    "Checking what changed…",
-    "Cross-checking test results…",
-    "Evaluating test assertions…",
-    "Running validation suite…",
+    'Running validation…',
+    'Verifying recent changes…',
+    'Evaluating test results…',
+    'Checking assertions…',
+    'Executing the test suite…',
   ],
 
   editing: [
-    "Making the surgical changes…",
-    "Putting the fix in place…",
-    "Reshaping the troublesome bits…",
-    "Updating codebase files…",
-    "Refactoring workspace modules…",
+    'Applying code changes…',
+    'Updating project files…',
+    'Refactoring affected modules…',
+    'Writing implementation updates…',
+    'Synchronizing file edits…',
   ],
 
   finishing: [
-    "Taking another pass…",
-    "Giving everything a final look…",
-    "Making sure the pieces fit…",
-    "Finalizing task execution…",
+    'Performing a final review…',
+    'Confirming completion criteria…',
+    'Closing out remaining work…',
+    'Finalizing the task…',
   ],
 };

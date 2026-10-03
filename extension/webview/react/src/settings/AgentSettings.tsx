@@ -1,5 +1,6 @@
 import React from 'react';
-import { SettingsConfig, GuardrailsConfig } from '../api/settings';
+import { SettingsConfig, GuardrailsConfig, AskPolicy } from '../api/settings';
+import { normalizeAskPolicy } from '../utils/askPolicy';
 
 interface AgentSettingsProps {
   settings: SettingsConfig;
@@ -17,9 +18,21 @@ const DEFAULT_GUARDRAILS: GuardrailsConfig = {
 };
 
 export const AgentSettings: React.FC<AgentSettingsProps> = ({ settings, onUpdate }) => {
-  const guardrails = settings.guardrails ?? DEFAULT_GUARDRAILS;
+  const guardrails: GuardrailsConfig = {
+    ...DEFAULT_GUARDRAILS,
+    ...(settings.guardrails ?? {}),
+    denyCommands: settings.guardrails?.denyCommands ?? DEFAULT_GUARDRAILS.denyCommands,
+    protectedPaths: settings.guardrails?.protectedPaths ?? DEFAULT_GUARDRAILS.protectedPaths,
+  };
   const updateGuardrails = (patch: Partial<GuardrailsConfig>) => {
-    onUpdate({ guardrails: { ...guardrails, ...patch } });
+    onUpdate({
+      guardrails: {
+        ...guardrails,
+        ...patch,
+        denyCommands: patch.denyCommands ?? guardrails.denyCommands ?? [],
+        protectedPaths: patch.protectedPaths ?? guardrails.protectedPaths ?? [],
+      },
+    });
   };
 
   return (
@@ -50,14 +63,14 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({ settings, onUpdate
         <div className="form-row">
           <label>Mode</label>
           <div className="radio-group-pills">
-            {['plan', 'code'].map((m) => (
-              <label key={m} className={`pill-btn ${settings.mode === m ? 'active' : ''}`}>
+            {(['ask', 'plan', 'agent'] as const).map((m) => (
+              <label key={m} className={`pill-btn ${settings.mode === m || (m === 'agent' && settings.mode === 'code') ? 'active' : ''}`}>
                 <input
                   type="radio"
                   name="mode"
                   value={m}
-                  checked={settings.mode === m}
-                  onChange={() => onUpdate({ mode: m as any })}
+                  checked={settings.mode === m || (m === 'agent' && settings.mode === 'code')}
+                  onChange={() => onUpdate({ mode: m })}
                 />
                 <span style={{ textTransform: 'capitalize' }}>{m}</span>
               </label>
@@ -132,6 +145,35 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({ settings, onUpdate
               <span>Confirm destructive operations</span>
             </label>
           </div>
+        </div>
+
+        <div className="form-row form-row-column" style={{ marginTop: 8 }}>
+          <label>Ask policy</label>
+          <div className="radio-group-pills">
+            {([
+              { id: 'standard' as AskPolicy, label: 'Reject certain asks' },
+              { id: 'accept_all' as AskPolicy, label: 'Accept all' },
+            ]).map((opt) => {
+              const active = normalizeAskPolicy(settings.askPolicy) === opt.id;
+              return (
+                <label key={opt.id} className={`pill-btn ${active ? 'active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="ask-policy"
+                    value={opt.id}
+                    checked={active}
+                    onChange={() => onUpdate({ askPolicy: opt.id })}
+                  />
+                  <span>{opt.label}</span>
+                </label>
+              );
+            })}
+          </div>
+          <p className="field-hint">
+            Accept all is for authorized security research and red teaming. It tells the
+            model not to refuse dual-use security work. Deny-listed commands and protected
+            paths still apply. Hosted model providers may still refuse at their API layer.
+          </p>
         </div>
       </div>
 
@@ -217,7 +259,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({ settings, onUpdate
               className="text-input textarea-input"
               rows={3}
               placeholder={"One substring per line, e.g.\nnpm publish\ncurl | sh"}
-              defaultValue={guardrails.denyCommands.join('\n')}
+              defaultValue={(guardrails.denyCommands ?? []).join('\n')}
               onBlur={(e) =>
                 updateGuardrails({
                   denyCommands: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean),
@@ -233,7 +275,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({ settings, onUpdate
               className="text-input textarea-input"
               rows={3}
               placeholder={"Workspace-relative globs, e.g.\n.env.local\nsecrets/**"}
-              defaultValue={guardrails.protectedPaths.join('\n')}
+              defaultValue={(guardrails.protectedPaths ?? []).join('\n')}
               onBlur={(e) =>
                 updateGuardrails({
                   protectedPaths: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean),

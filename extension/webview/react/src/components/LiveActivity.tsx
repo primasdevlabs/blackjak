@@ -4,13 +4,11 @@ import { RunStatus } from '../types/events';
 import { activityManager } from '../activity/activityManager';
 import { ActivityStatus, formatElapsed, phaseLabel } from '../activity/activityTypes';
 import {
-  ArrowPathIcon,
-  CheckCircleIcon,
-  XCircleIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   DocumentTextIcon,
 } from '@heroicons/react/24/outline';
+import { ActivityIndicator } from './ActivityIndicator';
 
 interface LiveActivityProps {
   status: RunStatus | null;
@@ -29,7 +27,6 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
 
   const isLive = status === 'running' || status === 'waiting' || status === 'pending';
 
-  // Tick once per second while live so the elapsed-time label stays current.
   useEffect(() => {
     if (!isLive) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -48,23 +45,28 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
   const phaseElapsed = activity.categorySince ? now - activity.categorySince : 0;
   const totalElapsed = activity.workingSince ? now - activity.workingSince : 0;
 
+  const label = status === 'waiting'
+    ? 'Waiting for approval'
+    : isLive
+      ? concrete || activity.ambientMessage || 'Thinking…'
+      : `${done.length} steps · ${filesRead.length} files scanned`;
+
+  const markState = isLive
+    ? 'live'
+    : failed.length > 0
+      ? 'error'
+      : 'done';
+
   return (
-    <div className="live-activity">
-      {/* Current action line */}
-      <div className="live-activity-current" onClick={() => setExpanded((v) => !v)} role="button">
-        {isLive ? (
-          <ArrowPathIcon className="icon-sm icon-spin live-activity-spinner" />
-        ) : failed.length > 0 ? (
-          <XCircleIcon className="icon-sm live-activity-icon-error" />
-        ) : (
-          <CheckCircleIcon className="icon-sm live-activity-icon-done" />
-        )}
-        <span className="live-activity-label">
-          {status === 'waiting'
-            ? 'Waiting for approval'
-            : isLive
-              ? concrete || activity.ambientMessage || 'Thinking…'
-              : `${done.length} steps · ${filesRead.length} files scanned`}
+    <div className={`live-activity ${isLive ? 'is-live' : 'is-idle'}`}>
+      <button
+        type="button"
+        className="live-activity-current"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <ActivityIndicator state={markState} />
+        <span className={`live-activity-label ${isLive ? 'live-activity-shimmer' : ''}`}>
+          {label}
         </span>
         {isLive && totalElapsed > 0 && (
           <span className="live-activity-elapsed">{formatElapsed(totalElapsed)}</span>
@@ -74,9 +76,8 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
             ? <ChevronDownIcon className="icon-sm live-activity-chevron" />
             : <ChevronRightIcon className="icon-sm live-activity-chevron" />
         )}
-      </div>
+      </button>
 
-      {/* Rotating ambient status — only when a concrete action is already shown above */}
       {isLive && activity.ambientMessage && concrete && activity.ambientMessage !== concrete && (
         <div className="live-activity-ambient">
           {activity.ambientMessage}
@@ -84,12 +85,10 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
         </div>
       )}
 
-      {/* Thought preview */}
       {isLive && thought && (
         <div className="live-activity-thought">{thought}</div>
       )}
 
-      {/* Expanded detail */}
       {expanded && (
         <div className="live-activity-detail">
           {activity.phases.length > 0 && (
@@ -103,31 +102,35 @@ export const LiveActivity: React.FC<LiveActivityProps> = ({ status, tools, files
           )}
           {recentDone.map((t) => (
             <div key={t.id} className="live-activity-row">
-              <CheckCircleIcon className="icon-sm live-activity-icon-done" />
+              <ActivityIndicator state="done" />
               <span>{t.step || t.name}</span>
             </div>
           ))}
           {running.map((t) => (
             <div key={t.id} className="live-activity-row live-activity-row-active">
-              <ArrowPathIcon className="icon-sm icon-spin" />
-              <span>{t.step || t.name}</span>
+              <ActivityIndicator state="live" />
+              <span className="live-activity-shimmer">{t.step || t.name}</span>
             </div>
           ))}
           {failed.slice(-2).map((t) => (
             <div key={t.id} className="live-activity-row">
-              <XCircleIcon className="icon-sm live-activity-icon-error" />
+              <ActivityIndicator state="error" />
               <span>{t.step || t.name}{t.output ? ` — ${t.output}` : ''}</span>
             </div>
           ))}
 
           {filesRead.length > 0 && (
-            <div className="live-activity-row live-activity-files" onClick={() => setShowFiles((v) => !v)} role="button">
+            <button
+              type="button"
+              className="live-activity-row live-activity-files"
+              onClick={() => setShowFiles((v) => !v)}
+            >
               <DocumentTextIcon className="icon-sm" />
-              <span>Scanned {filesRead.length} file{filesRead.length === 1 ? '' : 's'}</span>
+              <span>Explored {filesRead.length} file{filesRead.length === 1 ? '' : 's'}</span>
               {showFiles
                 ? <ChevronDownIcon className="icon-sm live-activity-chevron" />
                 : <ChevronRightIcon className="icon-sm live-activity-chevron" />}
-            </div>
+            </button>
           )}
           {showFiles && filesRead.slice(-12).map((p) => (
             <div key={p} className="live-activity-row live-activity-file">

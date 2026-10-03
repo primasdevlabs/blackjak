@@ -47,7 +47,7 @@ func (p *GeminiProvider) Ping(ctx context.Context) error {
 		return err
 	}
 
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := llm.NewHTTPClient(8 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("connection failed: %w", err)
@@ -74,7 +74,7 @@ func (p *GeminiProvider) ListModels(ctx context.Context) ([]llm.Model, error) {
 		return catalog, nil
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := llm.NewHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return catalog, nil
@@ -272,7 +272,7 @@ func (p *GeminiProvider) Chat(ctx context.Context, request llm.CompletionRequest
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := (&http.Client{Timeout: 120 * time.Second}).Do(req)
+	resp, err := (llm.NewHTTPClient(120 * time.Second)).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("gemini request failed: %w", err)
 	}

@@ -27,6 +27,7 @@ export function resolveAgentEndpoint(): AgentEndpoint {
   const win = window as any;
   const params = new URLSearchParams(window.location.search || '');
 
+  // Tauri injects __AGENT_PORT__ after free-port allocation; prefer it over stale storage.
   const rawPort =
     params.get('port') ??
     (win.__AGENT_PORT__ ? String(win.__AGENT_PORT__) : null) ??

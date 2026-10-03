@@ -17,6 +17,18 @@ export interface HostCapabilities {
   scm: boolean;
   diffEditor: boolean;
   secrets: boolean;
+  filePicker: boolean;
+  multiPanel: boolean;
+  settingsWindow: boolean;
+  activityPanel: boolean;
+}
+
+export interface PickFilesOptions {
+  canSelectMany?: boolean;
+  canSelectFolders?: boolean;
+  title?: string;
+  /** Map of label → extensions, e.g. { Images: ['png','jpg'] } */
+  filters?: Record<string, string[]>;
 }
 
 export interface HostInfo {
@@ -74,6 +86,11 @@ export interface AgentHost {
   // Secrets
   saveSecret(key: string, value: string): Promise<void>;
   getSecret(key: string): Promise<string | undefined>;
+
+  // Panels / pickers
+  pickFiles(options?: PickFilesOptions): Promise<string[]>;
+  openSettingsWindow(): void;
+  openActivityPanel(): void;
 
   /** Raw channel for host commands not covered by the typed surface. */
   postMessage(message: unknown): void;

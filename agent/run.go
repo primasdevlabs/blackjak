@@ -52,6 +52,7 @@ type Run struct {
 	CreatedAt    time.Time                      `json:"createdAt"`
 	UpdatedAt    time.Time                      `json:"updatedAt"`
 	Plan         *Plan                          `json:"plan,omitempty"`
+	Engineering  *EngineeringState              `json:"engineering,omitempty"`
 	Events       []Event                        `json:"events"`
 	Subagents    []*Subagent                    `json:"subagents"`
 	FileChanges  []workspace.FileChange         `json:"fileChanges"`
@@ -315,6 +316,7 @@ func (m *RunManager) CreateRun(prompt string, workspacePath string, attachments 
 		Status:        RunPending,
 		CreatedAt:     now,
 		UpdatedAt:     now,
+		Engineering:   NewEngineeringState(prompt),
 		Events:        make([]Event, 0),
 		Subagents:     make([]*Subagent, 0),
 		FileChanges:   make([]workspace.FileChange, 0),
@@ -418,8 +420,8 @@ func (m *RunManager) DeleteRun(id string) bool {
 	return true
 }
 
-// ClearFinished removes completed/failed/cancelled runs from history.
-// Returns the number of runs removed.
+// ClearFinished removes completed/cancelled runs from history.
+// Failed and paused runs are kept so the user can resume with continuity.
 func (m *RunManager) ClearFinished() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -428,7 +430,7 @@ func (m *RunManager) ClearFinished() int {
 		r.mu.RLock()
 		status := r.Status
 		r.mu.RUnlock()
-		if status == RunCompleted || status == RunFailed || status == RunCancelled {
+		if status == RunCompleted || status == RunCancelled {
 			delete(m.runs, id)
 			removed++
 		}

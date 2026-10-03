@@ -22,6 +22,7 @@ const (
 	EventAgentMessage   = "agent.message"
 	EventAgentThinking  = "agent.thinking"
 	EventAgentPlan      = "agent.plan"
+	EventAgentPhase     = "agent.phase"
 
 	EventToolStarted   = "tool.started"
 	EventToolOutput    = "tool.output"
@@ -54,4 +55,11 @@ const (
 	EventContextUpdated   = "context.updated"
 	EventContextCompacted = "context.compacted"
 	EventMemoryUpdated    = "memory.updated"
+
+	EventSettingsUpdated = "settings.updated"
+	EventCacheStats      = "cache.stats"
+	EventActivityLog     = "activity.log"
+	EventSkillsUpdated   = "skills.updated"
+	EventRulesUpdated    = "rules.updated"
+	EventIndexUpdated    = "index.updated"
 )

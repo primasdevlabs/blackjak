@@ -11,38 +11,44 @@ export const DiffView: React.FC<DiffViewProps> = ({ diffText, filePath, onClose 
   if (!diffText) return null;
 
   const lines = diffText.split('\n');
+  let lineNoOld = 0;
+  let lineNoNew = 0;
 
   return (
-    <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden', margin: '8px 0' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', borderBottom: '1px solid var(--border)', backgroundColor: 'var(--bg-elevated)' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{filePath || 'Diff View'}</span>
-        {onClose && (
-          <button style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={onClose}>
-            <XMarkIcon className="icon-sm" />
-          </button>
-        )}
-      </div>
-
-      <div style={{ fontSize: '11.5px', lineHeight: '1.5', overflowX: 'auto', padding: '6px 0' }}>
+    <div className="diff-view">
+      {(filePath || onClose) && (
+        <div className="diff-view-header">
+          <span>{filePath || 'Diff'}</span>
+          {onClose && (
+            <button type="button" className="diff-view-close" onClick={onClose}>
+              <XMarkIcon className="icon-sm" />
+            </button>
+          )}
+        </div>
+      )}
+      <div className="diff-view-body">
         {lines.map((line, idx) => {
-          let bg = 'transparent';
-          let color = 'var(--text-primary)';
-          let prefix = ' ';
-
-          if (line.startsWith('+')) {
-            bg = 'rgba(255, 255, 255, 0.06)';
-            color = 'var(--text-primary)';
-            prefix = '+';
+          let kind: 'add' | 'del' | 'meta' | 'ctx' = 'ctx';
+          if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+            kind = 'meta';
+          } else if (line.startsWith('+')) {
+            kind = 'add';
+            lineNoNew++;
           } else if (line.startsWith('-')) {
-            bg = 'rgba(255, 255, 255, 0.04)';
-            color = 'var(--text-muted)';
-            prefix = '-';
+            kind = 'del';
+            lineNoOld++;
+          } else {
+            lineNoOld++;
+            lineNoNew++;
           }
-
+          const display = kind === 'add' || kind === 'del' ? line.slice(1) : line;
+          const ln =
+            kind === 'add' ? lineNoNew : kind === 'del' ? lineNoOld : lineNoNew;
           return (
-            <div key={idx} style={{ backgroundColor: bg, color, padding: '1px 12px', display: 'flex', gap: '8px' }}>
-              <span style={{ color: 'var(--text-disabled)', width: '12px', userSelect: 'none' }}>{prefix}</span>
-              <span>{line.substring(line.startsWith('+') || line.startsWith('-') ? 1 : 0)}</span>
+            <div key={idx} className={`diff-line diff-${kind}`}>
+              <span className="diff-ln">{kind === 'meta' ? '' : ln}</span>
+              <span className="diff-prefix">{kind === 'add' ? '+' : kind === 'del' ? '-' : ' '}</span>
+              <span className="diff-code">{display}</span>
             </div>
           );
         })}

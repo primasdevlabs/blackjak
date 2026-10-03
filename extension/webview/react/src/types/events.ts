@@ -38,6 +38,7 @@ export type EventType =
   | 'agent.message'
   | 'agent.thinking'
   | 'agent.plan'
+  | 'agent.phase'
   | 'tool.started'
   | 'tool.output'
   | 'tool.completed'
@@ -94,9 +95,12 @@ export interface Subagent {
 
 export interface Attachment {
   id: string;
-  type: 'file' | 'folder';
+  type: 'file' | 'folder' | 'image';
   path: string;
   name: string;
+  /** Blob or served URL for image thumbnails / lightbox. */
+  previewUrl?: string;
+  mime?: string;
 }
 
 export interface WorkspaceReference {

@@ -104,10 +104,15 @@ export const ProviderSettings: React.FC<ProviderSettingsProps> = ({
             <input
               type="text"
               className="text-input"
-              placeholder={activeProvider === 'OpenAI-compatible' ? 'http://localhost:11434/v1' : 'Default endpoint'}
+              placeholder={activeProvider === 'OpenAI-compatible' ? 'https://api.example.com/v1' : 'Default endpoint'}
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
             />
+            {activeProvider === 'OpenAI-compatible' && (
+              <p className="field-hint">
+                Use the API root ending in <code>/v1</code>, not <code>/chat/completions</code>.
+              </p>
+            )}
           </div>
         )}
 
@@ -130,19 +135,29 @@ export const ProviderSettings: React.FC<ProviderSettingsProps> = ({
             <input
               type="text"
               className="text-input"
-              placeholder="llama3.2, mistral, etc."
+              placeholder="notrack-uncensored, llama3.2, …"
               value={modelId}
               onChange={(e) => setModelId(e.target.value)}
             />
           </div>
         )}
 
-        <div className="form-actions">
-          <button className="btn btn-secondary" onClick={handleSave} disabled={saving}>
+        <div className="form-actions settings-action-row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleSave}
+            disabled={saving}
+          >
             {saving ? 'Saving…' : 'Save'}
           </button>
-          <button className="btn btn-deny" onClick={() => onTestConnection(activeProvider)} disabled={saving}>
-            Test
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => onTestConnection(activeProvider)}
+            disabled={saving}
+          >
+            Test connection
           </button>
           {saveMsg && (
             <span className={`save-status ${saveMsg.ok ? 'ok' : 'err'}`}>{saveMsg.text}</span>
