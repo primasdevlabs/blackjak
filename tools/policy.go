@@ -116,7 +116,30 @@ func (p Policy) CheckCommand(cmd string) error {
 	if p.Mode == PolicyReadOnly && !isReadOnlyCommand(cmd) {
 		return fmt.Errorf("read-only mode: command not on the safe allowlist — %q", cmd)
 	}
+	if isWholeTreeListing(cmd) {
+		return fmt.Errorf("whole-tree listing blocked — use filesystem(list)/search with a narrow path instead of recursive dir/find over the workspace")
+	}
 	return nil
+}
+
+// isWholeTreeListing catches slow explore-theater commands that walk everything.
+func isWholeTreeListing(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	patterns := []string{
+		"dir /s", "dir /s /b", "tree /f", "tree /a",
+		"find .", "find ./", "find /",
+		"Get-ChildItem -Recurse", "gci -recurse", "ls -r ", "ls -recurse",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return true
+		}
+	}
+	// bare recursive ripgrep without a path hint is ok; recursive dir of drive roots is not
+	if strings.HasPrefix(lower, "dir ") && strings.Contains(lower, "/s") {
+		return true
+	}
+	return false
 }
 
 // CommandNeedsApproval reports whether a command must prompt the user first.

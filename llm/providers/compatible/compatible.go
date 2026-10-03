@@ -158,11 +158,14 @@ func (p *CompatibleProvider) Chat(ctx context.Context, request llm.CompletionReq
 	if model == "" {
 		model = p.modelID
 	}
+	// Keep under typical Cloudflare ~100s origin wait so 524s fail/retry sooner
+	// instead of hanging the UI for three minutes.
 	return llm.CompleteChatCompletion(ctx, llm.ChatCompletionConfig{
 		BaseURL: p.baseURL,
 		APIKey:  p.apiKey,
 		Model:   model,
-		Timeout: 180 * time.Second,
+		Timeout: 95 * time.Second,
+		Retries: 2,
 	}, &request)
 }
 

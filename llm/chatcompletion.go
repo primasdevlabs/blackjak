@@ -19,15 +19,16 @@ type ChatCompletionConfig struct {
 	Model    string
 	Timeout  time.Duration
 	Endpoint string // optional override; defaults to {BaseURL}/chat/completions
+	Retries  int    // extra attempts on transient gateway errors (default 2)
 }
 
 // openAIChatRequest mirrors the OpenAI chat completions request schema.
 type openAIChatRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openAIMessage     `json:"messages"`
-	Tools       []openAITool        `json:"tools,omitempty"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Temperature *float64            `json:"temperature,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []openAIMessage `json:"messages"`
+	Tools       []openAITool    `json:"tools,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
 }
 
 type openAIMessage struct {
@@ -61,9 +62,9 @@ type openAIChatResponse struct {
 		Message openAIMessage `json:"message"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens             int64 `json:"prompt_tokens"`
-		CompletionTokens         int64 `json:"completion_tokens"`
-		PromptTokensDetails      *struct {
+		PromptTokens        int64 `json:"prompt_tokens"`
+		CompletionTokens    int64 `json:"completion_tokens"`
+		PromptTokensDetails *struct {
 			CachedTokens int64 `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 	} `json:"usage,omitempty"`
@@ -80,6 +81,10 @@ type openAIChatResponse struct {
 func CompleteChatCompletion(ctx context.Context, cfg ChatCompletionConfig, req *CompletionRequest) (*CompletionResponse, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 120 * time.Second
+	}
+	retries := cfg.Retries
+	if retries <= 0 {
+		retries = 2
 	}
 	model := cfg.Model
 	if model == "" {
@@ -132,6 +137,29 @@ func CompleteChatCompletion(ctx context.Context, cfg ChatCompletionConfig, req *
 		endpoint = strings.TrimSuffix(cfg.BaseURL, "/") + "/chat/completions"
 	}
 
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt) * 1500 * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		result, err := doChatCompletionAttempt(ctx, cfg, endpoint, body)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !isTransientProviderError(err) || attempt == retries {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func doChatCompletionAttempt(ctx context.Context, cfg ChatCompletionConfig, endpoint string, body []byte) (*CompletionResponse, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -155,15 +183,16 @@ func CompleteChatCompletion(ctx context.Context, cfg ChatCompletionConfig, req *
 		return nil, fmt.Errorf("read chat response: %w", err)
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, formatHTTPStatusError(resp.StatusCode, respBody)
+	}
+
 	var parsed openAIChatResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("decode chat response (HTTP %d): %s", resp.StatusCode, truncate(string(respBody), 400))
 	}
 	if parsed.Error != nil {
 		return nil, fmt.Errorf("provider error: %s", parsed.Error.Message)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("chat completion HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 400))
 	}
 	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("chat completion returned no choices")
@@ -189,6 +218,45 @@ func CompleteChatCompletion(ctx context.Context, cfg ChatCompletionConfig, req *
 		}
 	}
 	return result, nil
+}
+
+func formatHTTPStatusError(code int, body []byte) error {
+	text := strings.TrimSpace(string(body))
+	switch code {
+	case 524, 504:
+		return fmt.Errorf("provider timed out (HTTP %d) — the model backend did not respond in time; retry, use a faster model/provider, or shrink the request", code)
+	case 502, 503:
+		return fmt.Errorf("provider unavailable (HTTP %d) — temporary gateway/upstream error; retry shortly", code)
+	case 429:
+		return fmt.Errorf("provider rate limited (HTTP 429) — wait and retry")
+	default:
+		if text == "" {
+			return fmt.Errorf("chat completion HTTP %d", code)
+		}
+		return fmt.Errorf("chat completion HTTP %d: %s", code, truncate(text, 400))
+	}
+}
+
+// IsTransientProviderError reports gateway/timeout errors worth retrying.
+func IsTransientProviderError(err error) bool {
+	return isTransientProviderError(err)
+}
+
+func isTransientProviderError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"http 524", "http 504", "http 502", "http 503", "http 429",
+		"provider timed out", "provider unavailable", "provider rate limited",
+		"timeout", "temporar", "connection reset", "eof",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncate(s string, n int) string {

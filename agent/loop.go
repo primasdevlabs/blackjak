@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	bjctx "blackjak/context"
@@ -92,19 +93,44 @@ func askUserGate(rm *RunManager, run *Run) tools.AskUserFunc {
 }
 
 // toolOutcome is the serialized result fed back to the model.
+// Large revert snapshots (previousContent) stay on the FileChange for the UI
+// but are stripped here — they otherwise bloat every subsequent LLM turn.
 func toolOutcome(result interface{}, err error) string {
 	if err != nil {
 		return fmt.Sprintf("Error: %s", err.Error())
 	}
+	result = stripModelHeavyFields(result)
 	data, merr := json.Marshal(result)
 	if merr != nil {
 		return fmt.Sprintf("%v", result)
 	}
 	out := string(data)
-	if len(out) > 16384 {
-		out = out[:16384] + "… [truncated]"
+	if len(out) > 12288 {
+		out = out[:12288] + "… [truncated]"
 	}
 	return out
+}
+
+func stripModelHeavyFields(result interface{}) interface{} {
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		return result
+	}
+	if _, has := m["previousContent"]; !has {
+		return result
+	}
+	cp := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if k == "previousContent" {
+			continue
+		}
+		cp[k] = v
+	}
+	if prev, ok := m["previousContent"].(string); ok && prev != "" {
+		cp["previousBytes"] = len(prev)
+		cp["previousOmitted"] = true
+	}
+	return cp
 }
 
 // ExecuteRun runs the real LLM tool-calling loop for a task.
@@ -127,11 +153,19 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 
 	policy := a.policy()
 	working := memory.NewWorkingMemory()
-	registry := a.buildRegistry(run, rm, working, policy)
-	toolSchemas := append(registry.Schemas(), planSchema(), delegateSchema(), taskCompleteSchema())
-
 	if run.Engineering == nil {
 		run.Engineering = NewEngineeringState(run.Prompt)
+	}
+	fastPath := run.Engineering.IsFastPath()
+	registry := a.buildRegistry(run, rm, working, policy)
+	if fastPath {
+		// Trivial / demo tasks: filesystem + finish only. No ask_user, shell,
+		// search, or delegate — those caused the "Waiting for input" + dir theater.
+		registry.FilterKeep([]string{"filesystem"})
+	}
+	toolSchemas := append(registry.Schemas(), taskCompleteSchema())
+	if !fastPath {
+		toolSchemas = append(toolSchemas, planSchema(), delegateSchema())
 	}
 	a.emitPhase(run)
 
@@ -140,7 +174,9 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 	resumed := len(messages) > 0
 	if !resumed {
 		userContent := run.Prompt
-		if a.retrieveFn != nil {
+		if fastPath {
+			userContent = fastPathUserDirective() + "\n\n" + run.Prompt
+		} else if a.retrieveFn != nil {
 			if hits := a.retrieveFn(run.Prompt, 6); len(hits) > 0 {
 				userContent = "Retrieved workspace context:\n- " + strings.Join(hits, "\n- ") + "\n\n" + run.Prompt
 			}
@@ -167,9 +203,14 @@ func (a *Agent) ExecuteRun(runCtx context.Context, run *Run, rm *RunManager) err
 		"workspace":  run.Workspace,
 		"references": run.References,
 		"toolCount":  len(toolSchemas),
+		"fastPath":   fastPath,
 	})
 
-	completed, err := a.runLoop(runCtx, run, rm, client, registry, toolSchemas, messages, 0, policy.StepsLimit())
+	maxSteps := policy.StepsLimit()
+	if fastPath && maxSteps > 8 {
+		maxSteps = 8
+	}
+	completed, err := a.runLoop(runCtx, run, rm, client, registry, toolSchemas, messages, 0, maxSteps)
 	if err != nil {
 		if errors.Is(err, errRunPaused) || run.IsPauseRequested() {
 			run.SetStatus(RunPaused)
@@ -226,6 +267,20 @@ func checkpointRun(rm *RunManager, run *Run, depth int, messages []llm.Message) 
 	}
 }
 
+// checkpointRunMaybe debounces disk writes during hot tool loops.
+func checkpointRunMaybe(rm *RunManager, run *Run, depth int, messages []llm.Message, last *time.Time, force bool) {
+	if depth != 0 || rm == nil {
+		return
+	}
+	if !force && last != nil && !last.IsZero() && time.Since(*last) < 2*time.Second {
+		return
+	}
+	rm.SaveCheckpoint(run, messages)
+	if last != nil {
+		*last = time.Now()
+	}
+}
+
 // runLoop executes LLM turns until the model stops calling tools or calls
 // task_complete. Returns the final completion result. maxSteps is a
 // guardrail — when it's hit the loop terminates rather than running forever.
@@ -236,6 +291,20 @@ var errRunPaused = fmt.Errorf("run paused")
 func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 	client llm.Client, registry *tools.Registry, toolSchemas []llm.Tool,
 	messages []llm.Message, depth int, maxSteps int) (completionResult, error) {
+
+	window := resolveContextWindow(client)
+	maxOut := defaultMaxTokens
+	if window > 0 && maxOut > window/4 {
+		maxOut = window / 4
+		if maxOut < 1024 {
+			maxOut = 1024
+		}
+	}
+	if run.Engineering != nil && run.Engineering.IsFastPath() && maxOut > 4096 {
+		// Demo/scaffold tasks need a short HTML/file write, not an 8k essay.
+		maxOut = 4096
+	}
+	var lastCheckpoint time.Time
 
 	// Persist the conversation on every exit path — completed, failed,
 	// paused, or cancelled — so resume always has the latest context.
@@ -258,8 +327,8 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			return completionResult{}, errRunPaused
 		}
 
-		// Manual /compact or auto-compact at ≥80% usable pressure.
-		compactor := bjctx.NewCompactor(128000)
+		// Manual /compact or auto-compact at ≥80% usable pressure for this model.
+		compactor := bjctx.NewCompactor(window)
 		budget := compactor.CalculateBudget(estimateMessageTokens(messages))
 		shouldAuto := depth == 0 && compactor.ShouldCompact(budget)
 		if run.TakeCompactionRequest() || shouldAuto {
@@ -267,7 +336,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			messages = a.compactMessages(ctx, run, client, messages)
 			after := estimateMessageTokens(messages)
 			run.SetMessages(messages)
-			checkpointRun(rm, run, depth, messages)
+			checkpointRunMaybe(rm, run, depth, messages, &lastCheckpoint, true)
 			a.emitEvent(run, "", EventContextCompacted, map[string]interface{}{
 				"compacted":    true,
 				"auto":         shouldAuto,
@@ -275,6 +344,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 				"tokensAfter":  after,
 				"tokensSaved":  before - after,
 				"pressure":     budget.Pressure,
+				"window":       window,
 			})
 			a.emitEvent(run, "", EventContextUpdated, map[string]interface{}{
 				"compacted":    true,
@@ -291,7 +361,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 		resp, err := client.Complete(ctx, &llm.CompletionRequest{
 			Messages:          messages,
 			Tools:             toolSchemas,
-			MaxTokens:         defaultMaxTokens,
+			MaxTokens:         maxOut,
 			EnablePromptCache: true,
 		})
 		if err != nil {
@@ -312,7 +382,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			})
 			messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
 			run.SetMessages(messages)
-			checkpointRun(rm, run, depth, messages)
+			checkpointRunMaybe(rm, run, depth, messages, &lastCheckpoint, false)
 		}
 
 		if len(resp.ToolCalls) == 0 {
@@ -330,30 +400,48 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			ToolCalls: resp.ToolCalls,
 		})
 		run.SetMessages(messages)
-		checkpointRun(rm, run, depth, messages)
+		checkpointRunMaybe(rm, run, depth, messages, &lastCheckpoint, false)
 
-		for _, call := range resp.ToolCalls {
+		parsed := make([]toolCallArgs, len(resp.ToolCalls))
+		for i, call := range resp.ToolCalls {
+			parsed[i] = toolCallArgs{call: call, args: parseToolArgs(call)}
+		}
+
+		runParallel := len(parsed) > 1 && allInspectToolCalls(parsed)
+		if runParallel {
+			results := a.executeToolCallsParallel(ctx, run, rm, registry, parsed, depth, toolSchemas, i+1)
+			for idx, tr := range results {
+				call := parsed[idx].call
+				messages = append(messages, llm.Message{
+					Role:       llm.RoleTool,
+					Name:       call.Name,
+					ToolCallID: call.ID,
+					Content:    toolOutcome(tr.result, tr.err),
+				})
+				if tr.done != nil {
+					run.SetMessages(messages)
+					checkpointRunMaybe(rm, run, depth, messages, &lastCheckpoint, true)
+					return *tr.done, nil
+				}
+			}
+			run.SetMessages(messages)
+			checkpointRunMaybe(rm, run, depth, messages, &lastCheckpoint, false)
+			continue
+		}
+
+		for _, item := range parsed {
 			if ctx.Err() != nil || run.IsPauseRequested() {
 				// Close out any unanswered tool_calls so resume stays valid.
 				messages = ensureToolCallResults(messages)
 				run.SetMessages(messages)
-				checkpointRun(rm, run, depth, messages)
+				checkpointRunMaybe(rm, run, depth, messages, &lastCheckpoint, true)
 				if run.IsPauseRequested() {
 					return completionResult{}, errRunPaused
 				}
 				return completionResult{}, ctx.Err()
 			}
 
-			var args map[string]interface{}
-			if call.Arguments != "" {
-				if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-					args = map[string]interface{}{"_raw": call.Arguments}
-				}
-			}
-			if args == nil {
-				args = map[string]interface{}{}
-			}
-
+			call, args := item.call, item.args
 			a.emitEvent(run, "", EventToolStarted, map[string]interface{}{
 				"tool": call.Name,
 				"args": args,
@@ -370,7 +458,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 			} else {
 				a.emitEvent(run, "", EventToolCompleted, map[string]interface{}{
 					"tool":   call.Name,
-					"result": result,
+					"result": stripModelHeavyFields(result),
 				})
 			}
 
@@ -381,7 +469,7 @@ func (a *Agent) runLoop(ctx context.Context, run *Run, rm *RunManager,
 				Content:    toolOutcome(result, err),
 			})
 			run.SetMessages(messages)
-			checkpointRun(rm, run, depth, messages)
+			checkpointRunMaybe(rm, run, depth, messages, &lastCheckpoint, false)
 
 			if done != nil {
 				return *done, nil
@@ -424,6 +512,9 @@ func (a *Agent) executeToolCall(ctx context.Context, run *Run, rm *RunManager,
 	// Hybrid write gate: non-trivial Agent tasks must inspect before mutating.
 	if err := checkWriteGate(eng, mode, call.Name, args); err != nil {
 		return nil, nil, err
+	}
+	if eng.IsFastPath() && (call.Name == "ask_user" || call.Name == "delegate" || call.Name == "shell" || call.Name == "search") {
+		return nil, nil, fmt.Errorf("fast path: %s is disabled — use filesystem(write/edit) then task_complete", call.Name)
 	}
 
 	switch call.Name {
@@ -505,15 +596,6 @@ func (a *Agent) recordEngineeringEvidence(run *Run, toolName string, args map[st
 	if isInspectToolCall(toolName, args) {
 		eng.MarkInspect()
 		changed = true
-		// Progressive retrieval: refresh working-memory hits after inspect.
-		if a.retrieveFn != nil {
-			// working memory lives per-loop; stash on run via persistent-style key in emit.
-			if hits := a.retrieveFn(run.Prompt, 4); len(hits) > 0 {
-				a.emitEvent(run, "", EventContextUpdated, map[string]interface{}{
-					"progressiveRetrieve": hits,
-				})
-			}
-		}
 	}
 	if isMutatingToolCall(toolName, args) {
 		eng.MarkImplement()
@@ -774,10 +856,36 @@ func (a *Agent) resolveClient(role string) llm.Client {
 	return client
 }
 
+func fastPathUserDirective() string {
+	return `FAST PATH — execute immediately:
+- Do NOT ask clarifying questions.
+- Do NOT explore the repo with shell/search/list.
+- Create or edit the requested file(s) with filesystem(write/edit) in your first tool call(s).
+- Keep the result minimal (test/demo quality is fine when the user said so).
+- Call task_complete as soon as the file(s) exist.`
+}
+
+func fastPathSystemPrompt(workspacePath string) string {
+	return `You are Blackjak in FAST PATH mode for a simple/demo task.
+
+Tools available: filesystem (read/write/edit/list), task_complete.
+Rules:
+1. Write the requested file(s) immediately — no planning theater, no questions.
+2. Prefer a single new file under the workspace root unless a path was specified.
+3. Keep output minimal and self-contained.
+4. Finish with task_complete.
+
+Workspace: ` + workspacePath
+}
+
 // buildSystemPrompt assembles the full system prompt including persistent
 // memory and the active guardrail contract, so the model knows its limits
 // before it tries a call that will be rejected.
 func (a *Agent) buildSystemPrompt(run *Run, working *memory.WorkingMemory, policy tools.Policy) string {
+	if run != nil && run.Engineering != nil && run.Engineering.IsFastPath() {
+		return fastPathSystemPrompt(run.Workspace)
+	}
+
 	mode := "agent"
 	if a.modeFn != nil {
 		mode = a.modeFn()
@@ -918,20 +1026,25 @@ func (a *Agent) compactMessages(ctx context.Context, run *Run, client llm.Client
 	var transcript strings.Builder
 	for _, m := range omitted {
 		content := m.Content
-		if len(content) > 1200 {
-			content = content[:1200] + "…"
+		if len(content) > 800 {
+			content = content[:800] + "…"
 		}
 		fmt.Fprintf(&transcript, "[%s] %s\n", m.Role, content)
 	}
 
+	// Prefer the fast model for compaction — coding model RTT is wasted here.
+	summarizer := a.resolveClient("fast")
+	if summarizer == nil {
+		summarizer = client
+	}
 	summary := ""
-	if client != nil {
-		resp, err := client.Complete(ctx, &llm.CompletionRequest{
+	if summarizer != nil {
+		resp, err := summarizer.Complete(ctx, &llm.CompletionRequest{
 			Messages: []llm.Message{
 				{Role: llm.RoleSystem, Content: "Summarize agent history for continuity as structured bullets: Objective, Decisions, Files touched, Commands/tests and outcomes, Pending work, Risks. Be terse. Do not invent results."},
 				{Role: llm.RoleUser, Content: transcript.String()},
 			},
-			MaxTokens: 1024,
+			MaxTokens: 768,
 		})
 		if err == nil {
 			summary = resp.Content
@@ -949,6 +1062,105 @@ func (a *Agent) compactMessages(ctx context.Context, run *Run, client llm.Client
 	})
 	compacted = append(compacted, messages[cut:]...)
 	return compacted
+}
+
+type toolCallArgs struct {
+	call llm.ToolCall
+	args map[string]interface{}
+}
+
+type toolCallResult struct {
+	result interface{}
+	done   *completionResult
+	err    error
+}
+
+func parseToolArgs(call llm.ToolCall) map[string]interface{} {
+	var args map[string]interface{}
+	if call.Arguments != "" {
+		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+			args = map[string]interface{}{"_raw": call.Arguments}
+		}
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	return args
+}
+
+func allInspectToolCalls(items []toolCallArgs) bool {
+	for _, item := range items {
+		if item.call.Name == "task_complete" || item.call.Name == "update_plan" || item.call.Name == "delegate" {
+			return false
+		}
+		if !isInspectToolCall(item.call.Name, item.args) {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Agent) executeToolCallsParallel(ctx context.Context, run *Run, rm *RunManager,
+	registry *tools.Registry, items []toolCallArgs, depth int, toolSchemas []llm.Tool, step int) []toolCallResult {
+	out := make([]toolCallResult, len(items))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i, item := range items {
+		wg.Add(1)
+		go func(idx int, item toolCallArgs) {
+			defer wg.Done()
+			mu.Lock()
+			a.emitEvent(run, "", EventToolStarted, map[string]interface{}{
+				"tool":     item.call.Name,
+				"args":     item.args,
+				"step":     step,
+				"parallel": true,
+			})
+			mu.Unlock()
+
+			result, done, err := a.executeToolCall(ctx, run, rm, registry, item.call, item.args, depth, toolSchemas)
+
+			mu.Lock()
+			if err != nil {
+				a.emitEvent(run, "", EventToolFailed, map[string]interface{}{
+					"tool":  item.call.Name,
+					"error": err.Error(),
+				})
+			} else {
+				a.emitEvent(run, "", EventToolCompleted, map[string]interface{}{
+					"tool":   item.call.Name,
+					"result": stripModelHeavyFields(result),
+				})
+			}
+			mu.Unlock()
+			out[idx] = toolCallResult{result: result, done: done, err: err}
+		}(i, item)
+	}
+	wg.Wait()
+	return out
+}
+
+// resolveContextWindow returns the model's context window when known.
+func resolveContextWindow(client llm.Client) int {
+	const fallback = 128000
+	pc, ok := client.(*llm.ProviderClient)
+	if !ok || pc == nil || pc.Provider == nil {
+		return fallback
+	}
+	models, err := pc.Provider.ListModels(context.Background())
+	if err != nil {
+		return fallback
+	}
+	for _, m := range models {
+		if m.ID == pc.Model && m.ContextWindow > 0 {
+			return m.ContextWindow
+		}
+	}
+	// OpenAI-compatible providers often list a single dynamic model.
+	if len(models) == 1 && models[0].ContextWindow > 0 {
+		return models[0].ContextWindow
+	}
+	return fallback
 }
 
 // argStr extracts a string arg.

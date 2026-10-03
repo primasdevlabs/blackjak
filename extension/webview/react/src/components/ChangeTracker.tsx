@@ -91,14 +91,14 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
               onClick={() => agentStore.reviewAllFileChanges('accept')}
               title="Keep all pending changes"
             >
-              <CheckIcon className="icon-xs" /> Approve all
+              <CheckIcon className="icon-sm" /> Approve all
             </button>
             <button
               className="change-action-btn change-btn-decline"
               onClick={() => agentStore.reviewAllFileChanges('reject')}
               title="Revert all pending changes"
             >
-              <XMarkIcon className="icon-xs" /> Decline all
+              <XMarkIcon className="icon-sm" /> Decline all
             </button>
           </div>
         )}
@@ -159,7 +159,7 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
                             onClick={() => review(change, 'accept')}
                             title="Keep this change"
                           >
-                            <CheckIcon className="icon-xs" />
+                            <CheckIcon className="icon-sm" />
                           </button>
                           <button
                             className="change-action-btn change-btn-decline"
@@ -167,7 +167,7 @@ export const ChangeTracker: React.FC<ChangeTrackerProps> = ({ changes, subagents
                             title={change.canRevert === false ? 'Cannot revert (no snapshot)' : 'Revert this change'}
                             disabled={change.canRevert === false}
                           >
-                            <XMarkIcon className="icon-xs" />
+                            <XMarkIcon className="icon-sm" />
                           </button>
                         </>
                       )}

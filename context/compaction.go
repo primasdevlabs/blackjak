@@ -47,10 +47,26 @@ func NewCompactor(maxTokens int) *Compactor {
 	if maxTokens <= 0 {
 		maxTokens = 128000
 	}
+	// Scale reserves to the real window so small (e.g. 32k) models still have
+	// usable prompt budget and auto-compact triggers before the API rejects.
+	reservedOut := maxTokens / 6
+	if reservedOut < 2048 {
+		reservedOut = 2048
+	}
+	if reservedOut > 16000 {
+		reservedOut = 16000
+	}
+	reservedTools := maxTokens / 10
+	if reservedTools < 1024 {
+		reservedTools = 1024
+	}
+	if reservedTools > 8000 {
+		reservedTools = 8000
+	}
 	return &Compactor{
 		MaxContextWindow: maxTokens,
-		ReservedOutput:   16000,
-		ReservedTools:    8000,
+		ReservedOutput:   reservedOut,
+		ReservedTools:    reservedTools,
 	}
 }
 

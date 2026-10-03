@@ -75,19 +75,19 @@ func NewEngineeringState(prompt string) *EngineeringState {
 }
 
 // nonTrivialKeywords push a prompt into the gated engineering loop.
+// Keep this list focused on sensitive / high-risk work — broad verbs like
+// "fix"/"implement" alone must not force explore→verify→self-review theater.
 var nonTrivialKeywords = []string{
 	"auth", "authentication", "authorization", "oauth", "jwt",
 	"migrat", "schema", "database", "sql", "transaction",
 	"concurren", "goroutine", "race", "deadlock", "mutex",
 	"microservice", "kubernetes", "deploy", "infra",
-	"refactor", "architect", "api ", "endpoint", "graphql",
+	"refactor", "architect", "graphql",
 	"security", "encrypt", "password", "secret", "csrf", "xss", "ssrf",
-	"implement", "build", "create", "add feature", "fix bug",
-	"performance", "optimize", "benchmark",
-	"ui ", "frontend", "css", "react", "component",
+	"add feature", "rewrite the", "from scratch",
 }
 
-// ClassifyTask returns trivial for short Q&A-style prompts, else nonTrivial.
+// ClassifyTask returns trivial for short Q&A / local edits / demos, else nonTrivial.
 func ClassifyTask(prompt string) TaskClass {
 	p := strings.TrimSpace(prompt)
 	if p == "" {
@@ -95,31 +95,59 @@ func ClassifyTask(prompt string) TaskClass {
 	}
 	lower := strings.ToLower(p)
 	words := strings.Fields(lower)
-	if len(words) <= 12 && !containsNonTrivialKeyword(lower) {
-		// Short questions / lookups.
-		if strings.HasPrefix(lower, "what ") ||
-			strings.HasPrefix(lower, "where ") ||
-			strings.HasPrefix(lower, "how does ") ||
-			strings.HasPrefix(lower, "explain ") ||
-			strings.HasPrefix(lower, "who ") ||
-			strings.HasPrefix(lower, "why ") ||
-			strings.Contains(lower, "?") && len(words) <= 20 {
-			return TaskTrivial
-		}
+	// Explicit demo / scaffold / throwaway work always stays on the fast path,
+	// even if the prompt mentions login/auth wording casually.
+	if isDemoOrScaffoldPrompt(lower) {
+		return TaskTrivial
 	}
 	if containsNonTrivialKeyword(lower) {
 		return TaskNonTrivial
 	}
-	if len(words) > 25 {
+	if len(words) <= 12 {
+		// Short questions / lookups / one-liner tweaks stay ungated.
+		return TaskTrivial
+	}
+	if len(words) > 40 {
 		return TaskNonTrivial
 	}
-	// Medium prompts that look like change requests.
-	for _, verb := range []string{"add ", "fix ", "implement ", "update ", "change ", "rewrite ", "remove ", "delete ", "create "} {
+	// Substantial multi-step change requests.
+	heavy := 0
+	for _, verb := range []string{"implement ", "refactor ", "migrate ", "redesign ", "architect "} {
 		if strings.Contains(lower, verb) {
-			return TaskNonTrivial
+			heavy++
 		}
 	}
+	if heavy > 0 && len(words) > 18 {
+		return TaskNonTrivial
+	}
 	return TaskTrivial
+}
+
+// isDemoOrScaffoldPrompt detects throwaway / test / simple UI scaffolds where
+// explore→ask→plan theater is pure waste.
+func isDemoOrScaffoldPrompt(lower string) bool {
+	markers := []string{
+		"test page", "demo page", "sample page", "throwaway",
+		"just a test", "just a demo", "just a simple", "just a page",
+		"not a full", "not production", "scaffold", "placeholder page",
+		"simple login page", "simple html", "static page", "mockup",
+	}
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsFastPath reports whether this run should use the slim toolset + short prompt.
+func (e *EngineeringState) IsFastPath() bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.TaskClass == TaskTrivial
 }
 
 func containsNonTrivialKeyword(lower string) bool {
@@ -199,11 +227,10 @@ func (e *EngineeringState) MarkImplement() {
 	defer e.mu.Unlock()
 	e.Evidence.Implement = true
 	e.FilesChanged = true
-	if e.TaskClass == TaskTrivial {
-		e.TaskClass = TaskNonTrivial
-	}
+	// Do not auto-promote trivial local edits into the full gated loop —
+	// that forced inspect/verify/self-review theater on every small change.
 	e.Phase = PhaseImplement
-	// New changes invalidate prior verify/review.
+	// New changes invalidate prior verify/review for gated tasks.
 	e.Evidence.Verify = false
 	e.Evidence.Review = false
 	e.Review = nil
@@ -389,21 +416,19 @@ func checkCompleteGate(eng *EngineeringState, mode string) error {
 	if eng == nil {
 		return nil
 	}
-	// Promote/gates: any file mutations require verify when in agent mode.
-	if !eng.HasFilesChanged() {
-		return nil
-	}
-	modeOK := mode == "" || mode == "agent" || mode == "code"
-	if !modeOK {
+	// Only gated (non-trivial) agent tasks must verify before complete.
+	// Local/trivial edits should not pay for a full test suite round-trip.
+	if !eng.HasFilesChanged() || !eng.NeedsGates(mode) {
 		return nil
 	}
 	if !eng.HasVerify() {
-		return fmt.Errorf("engineering gate: verify before complete — run tests or a build/lint command (e.g. go test ./..., npm test) after changing files; do not claim verification without tool evidence")
+		return fmt.Errorf("engineering gate: verify before complete — run tests or a build/lint command (e.g. go test ./agent, npm test) after changing files; do not claim verification without tool evidence")
 	}
 	return nil
 }
 
 // needsAutoReview reports whether a self-review must run before complete.
+// Reserved for gated non-trivial work — not every file tweak.
 func needsAutoReview(eng *EngineeringState, mode string) bool {
 	if eng == nil || !eng.NeedsGates(mode) {
 		return false

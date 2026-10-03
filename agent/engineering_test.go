@@ -11,6 +11,10 @@ func TestClassifyTask_TrivialQuestions(t *testing.T) {
 		"Where is the Plan type defined?",
 		"Explain the event broker",
 		"how does compaction work?",
+		"Fix the typo in README",
+		"Move the Files bar above the composer",
+		"create a simple login page\nits just a test page, not a full implementation",
+		"Make a demo page with a login form",
 	}
 	for _, c := range cases {
 		if got := ClassifyTask(c); got != TaskTrivial {
@@ -19,12 +23,22 @@ func TestClassifyTask_TrivialQuestions(t *testing.T) {
 	}
 }
 
+func TestDemoPromptForcesFastPath(t *testing.T) {
+	eng := NewEngineeringState("create a simple login page — just a test page, not a full implementation")
+	if !eng.IsFastPath() {
+		t.Fatal("demo login page must use fast path")
+	}
+	if eng.NeedsGates("agent") {
+		t.Fatal("demo must not enable engineering gates")
+	}
+}
+
 func TestClassifyTask_NonTrivial(t *testing.T) {
 	cases := []string{
 		"Implement JWT authentication for the API",
 		"Add a database migration for users table",
 		"Fix the race condition in the orchestrator",
-		"Refactor the agent loop to support hybrid engineering gates",
+		"Refactor the agent loop to support hybrid engineering gates across resume",
 	}
 	for _, c := range cases {
 		if got := ClassifyTask(c); got != TaskNonTrivial {
@@ -34,7 +48,7 @@ func TestClassifyTask_NonTrivial(t *testing.T) {
 }
 
 func TestWriteGate_BlocksWithoutInspect(t *testing.T) {
-	eng := NewEngineeringState("Implement a new filesystem helper")
+	eng := NewEngineeringState("Implement JWT authentication for the API")
 	err := checkWriteGate(eng, "agent", "filesystem", map[string]interface{}{"operation": "write"})
 	if err == nil {
 		t.Fatal("expected write gate error")
@@ -45,7 +59,7 @@ func TestWriteGate_BlocksWithoutInspect(t *testing.T) {
 }
 
 func TestWriteGate_AllowsAfterInspect(t *testing.T) {
-	eng := NewEngineeringState("Implement a new filesystem helper")
+	eng := NewEngineeringState("Implement JWT authentication for the API")
 	eng.MarkInspect()
 	if err := checkWriteGate(eng, "agent", "filesystem", map[string]interface{}{"operation": "write"}); err != nil {
 		t.Fatalf("unexpected: %v", err)
@@ -62,8 +76,14 @@ func TestWriteGate_TrivialSkips(t *testing.T) {
 	}
 }
 
-func TestCompleteGate_RequiresVerify(t *testing.T) {
-	eng := NewEngineeringState("Fix the bug in shell.go")
+func TestCompleteGate_RequiresVerifyOnlyWhenGated(t *testing.T) {
+	trivial := NewEngineeringState("Fix typo in shell.go")
+	trivial.MarkImplement()
+	if err := checkCompleteGate(trivial, "agent"); err != nil {
+		t.Fatalf("trivial edits should not require verify: %v", err)
+	}
+
+	eng := NewEngineeringState("Implement JWT authentication for the API")
 	eng.MarkInspect()
 	eng.MarkImplement()
 	err := checkCompleteGate(eng, "agent")
@@ -76,14 +96,14 @@ func TestCompleteGate_RequiresVerify(t *testing.T) {
 	}
 }
 
-func TestPromoteOnImplement(t *testing.T) {
+func TestImplementDoesNotAutoPromote(t *testing.T) {
 	eng := NewEngineeringState("What is X?")
 	if eng.TaskClass != TaskTrivial {
 		t.Fatal("want trivial")
 	}
 	eng.MarkImplement()
-	if eng.TaskClass != TaskNonTrivial {
-		t.Fatalf("want nonTrivial after write, got %s", eng.TaskClass)
+	if eng.TaskClass != TaskTrivial {
+		t.Fatalf("local edits must stay trivial, got %s", eng.TaskClass)
 	}
 	if !eng.HasFilesChanged() {
 		t.Fatal("want filesChanged")
@@ -141,7 +161,7 @@ func TestToolAllowedForRole(t *testing.T) {
 }
 
 func TestNeedsAutoReview(t *testing.T) {
-	eng := NewEngineeringState("Implement API rate limiting")
+	eng := NewEngineeringState("Implement JWT authentication for the API")
 	eng.MarkInspect()
 	eng.MarkImplement()
 	eng.MarkVerify()
@@ -151,5 +171,25 @@ func TestNeedsAutoReview(t *testing.T) {
 	eng.MarkReview(&ReviewResult{Verdict: "pass"})
 	if needsAutoReview(eng, "agent") {
 		t.Fatal("pass should clear auto review need")
+	}
+
+	local := NewEngineeringState("Tweak FilesReviewBar padding")
+	local.MarkImplement()
+	if needsAutoReview(local, "agent") {
+		t.Fatal("local edits should skip auto review")
+	}
+}
+
+func TestToolOutcomeStripsPreviousContent(t *testing.T) {
+	out := toolOutcome(map[string]interface{}{
+		"path":            "a.go",
+		"replaced":        1,
+		"previousContent": strings.Repeat("x", 5000),
+	}, nil)
+	if strings.Contains(out, "previousContent") {
+		t.Fatal("previousContent must not reach the model")
+	}
+	if !strings.Contains(out, "previousOmitted") {
+		t.Fatal("expected previousOmitted marker")
 	}
 }

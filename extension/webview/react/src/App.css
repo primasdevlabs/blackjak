@@ -2078,7 +2078,7 @@ body {
 .change-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
   opacity: 0;
   transition: opacity 120ms ease;
@@ -2096,15 +2096,25 @@ body {
 .change-action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  background: transparent;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  color: var(--text-muted);
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1;
   cursor: pointer;
   transition: all 100ms ease;
+}
+
+.change-action-btn .icon-sm,
+.change-action-btn .icon-xs {
+  width: 14px;
+  height: 14px;
 }
 
 .change-action-btn:hover {
@@ -2119,25 +2129,28 @@ body {
 }
 
 .change-btn-accept:hover {
-  color: #4ade80;
-  border-color: rgba(74, 222, 128, 0.5);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 
 .change-btn-decline:hover {
-  color: var(--error);
-  border-color: rgba(239, 68, 68, 0.5);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 
 .change-tracker-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .change-pending-count {
   margin-left: 8px;
-  color: #fbbf24;
+  color: var(--text-secondary);
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
@@ -2145,23 +2158,33 @@ body {
 
 .change-bulk-actions {
   display: flex;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.change-bulk-actions .change-action-btn {
+  min-height: 32px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .change-status {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
 }
 
 .change-status.accepted {
-  color: #4ade80;
-  background-color: rgba(74, 222, 128, 0.08);
+  color: var(--text-primary);
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
 }
 
 .change-status.rejected {
   color: var(--text-muted);
   background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
 }
 
 .change-file-entry.change-rejected .change-file-path {
@@ -3172,15 +3195,16 @@ body {
   padding: 6px 12px;
   border-bottom: 1px solid var(--border-subtle);
 }
-.activity-tabs { display: flex; gap: 2px; background: var(--bg); border-radius: 7px; padding: 2px; }
+.activity-tabs { display: flex; gap: 3px; background: var(--bg); border-radius: 8px; padding: 3px; }
 .activity-tab {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 5px;
+  font-size: 12.5px;
+  font-weight: 550;
+  min-height: 30px;
+  padding: 6px 12px;
+  border-radius: 6px;
   cursor: pointer;
 }
 .activity-tab.active {
@@ -3311,7 +3335,7 @@ body {
 }
 .activity-review-btn {
   background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-primary);
-  border-radius: 8px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+  border-radius: 8px; min-height: 32px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
 .activity-review-btn:disabled { opacity: 0.45; cursor: default; }
 .activity-files-item {
